@@ -48,7 +48,13 @@ assert.equal(calls, 128 * 128);
 checkMap(depth, gradient);
 for (const [x, z] of [[-450.3, 233.7], [-398.1, 211.3], [-500.6, 190.9]]) {
   assert(Math.abs(shaderSample(depth, x, z) - gradient(x, z)) <= tolerance, 'Filtered RG height has a half-texel or axis offset');
+  const sample = depth.sample(x, z);
+  assert(Math.abs(sample.bottom - gradient(x, z)) <= tolerance);
+  assert(Math.abs(sample.dx - .01) <= 1 / 126 && Math.abs(sample.dz - .017) <= 1 / 126,
+    'Shore gradient does not point up the real seabed');
+  assert.equal(sample.coverage, 1);
 }
+assert.equal(depth.sample(start.x + 700, start.z).coverage, 0, 'Local shoreline reflection extends beyond the map');
 
 const oldMap = depth.uniforms.seabedMap.value, oldOrigin = depth.uniforms.seabedOrigin.value.clone();
 const oldBytes = Uint8Array.from(oldMap.image.data), oldVersion = oldMap.version;

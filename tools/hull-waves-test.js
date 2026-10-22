@@ -36,6 +36,7 @@ function energy(waves) {
 function assertFinite(waves, context) {
   assert(waves.height.every(Number.isFinite), context + ': every height must be finite');
   assert(waves.height.every(v => Math.abs(v) < 4), context + ': height remains below four metres');
+  if (waves.farField) assertFinite(waves.farField, context + ' broad layer');
 }
 function check(name, test) { test(); console.log('PASS ' + name); }
 
@@ -84,13 +85,82 @@ check('old waves keep their world positions when the local grid shifts or the bo
   shifted.update(4 + 1 / 60, state(nav(58, 0, 0, 10)), pose);
   turned.update(4 + 1 / 60, state(nav(40, 0, Math.PI / 2)), pose);
   assert(shifted.origin.x !== oldOrigin.x || shifted.origin.z !== oldOrigin.z, 'Scenario must actually shift the grid');
-  const reference = values(steady, 5, 18, 5, 13, 0.75);
-  assert(rms(reference) > 0.0001, 'The historical wake patch must contain waves');
-  for (const [label, waves] of [['grid shift', shifted], ['turn', turned]]) {
-    const sampled = values(waves, 5, 18, 5, 13, 0.75);
-    const difference = rms(sampled.map((h, i) => h - reference[i]));
-    assert(difference < 0.00001, `${label} must not drag or rotate existing waves: RMS error ${difference}`);
+  // Verify both physical grids separately: their continuous resolution blend
+  // legitimately changes as the observer travels eighteen metres in one frame.
+  for (const layer of [waves => waves, waves => waves.farField]) {
+    const reference = values({sample: layer(steady).sampleLocal}, 5, 18, 5, 13, 0.75);
+    assert(rms(reference) > 0.0001, 'The historical wake patch must contain waves');
+    for (const [label, waves] of [['grid shift', shifted], ['turn', turned]]) {
+      const sampled = values({sample: layer(waves).sampleLocal}, 5, 18, 5, 13, 0.75);
+      const difference = rms(sampled.map((h, i) => h - reference[i]));
+      assert(difference < 0.00001, `${label} must not drag or rotate existing waves: RMS error ${difference}`);
+    }
   }
+});
+
+check('the wake keeps spreading beyond the fine grid after the hull stops', () => {
+  const waves = cruise(10, 3);
+  const distantStrip = () => values(waves, -6, 40, 98, 112, 2);
+  const before = rms(distantStrip());
+  evolve(waves, 3, 26, 30, () => nav(30));
+  const after = rms(distantStrip());
+  assert(after > Math.max(before * 10, 0.0001), `Broad wake must reach water outside the fine grid: ${before} -> ${after}`);
+  assert.equal(rms(values({sample: waves.sampleLocal}, -6, 40, 98, 112, 2)), 0, 'Arrival must come from the broad propagation layer');
+});
+
+check('a departed hull leaves a moving wake in the world beyond its local grid', () => {
+  const waves = cruise(10, 24, 30);
+  assert(waves.origin.x > 100, 'The boat must have left the old wake region');
+  const historical = values(waves, -10, 65, 75, 110, 2.5);
+  assert(rms(historical) > 0.0001, 'Historical waves must survive after the fine grid has completely left them');
+  assert.equal(rms(values({sample: waves.sampleLocal}, -10, 65, 75, 110, 2.5)), 0);
+});
+
+check('a stopped hull leaves substantial propagating swell for at least a minute', () => {
+  const waves = cruise(10, 3, 30);
+  evolve(waves, 3, 10, 30, () => nav(30));
+  const settledEnergy = waves.farField.stats().energy;
+  evolve(waves, 10, 63, 30, () => nav(30));
+  const remaining = waves.farField.stats();
+  assert(remaining.energy > settledEnergy * .55,
+    `Open-water drag erased the swell too quickly: ${settledEnergy} -> ${remaining.energy}`);
+  assert(remaining.energy < settledEnergy, 'The undriven swell must still lose energy');
+  assert(remaining.maxAbsHeight > .025, 'Minute-old travelling waves must retain centimetre-scale crests');
+  assertFinite(waves, 'Minute-old swell');
+});
+
+check('full-speed travel preserves the old wake after 30 seconds', () => {
+  const waves = cruise(23, 30, 30);
+  const oldSwell = values(waves, -30, 120, 30, 170, 3);
+  assert(rms(oldSwell) > .008, 'Following a fast hull discarded its old propagating wake');
+  assert.equal(rms(values({sample: waves.sampleLocal}, -30, 120, 30, 170, 3)), 0,
+    'Old wake check must be entirely outside the fine grid');
+});
+
+check('the resolution blend moves continuously when texture grids recenter', () => {
+  const waves = cruise(10, 3, 60);
+  let origin = {...waves.origin}, shifts = 0;
+  for (let frame = 1; frame <= 120; frame++) {
+    const blendOrigin = {...waves.blendOrigin}, t = 3 + frame / 60;
+    waves.update(t, state(nav(10 * t, 0, 0, 10)), pose);
+    assert(Math.abs(waves.blendOrigin.x - blendOrigin.x - 10 / 60) < 1e-10, 'Blend position must follow the hull without cell-sized jumps');
+    if (origin.x !== waves.origin.x) shifts++;
+    origin = {...waves.origin};
+  }
+  assert(shifts > 0, 'Continuity check must cross a fine-grid recenter');
+  const z = waves.blendOrigin.z + waves.blendStart;
+  const h0 = waves.sample(30, z - .001), h1 = waves.sample(30, z + .001);
+  assert(Math.abs(h1 - h0) < .001, 'Fine/broad blend boundary must be continuous');
+});
+
+check('coarse source integration retains hull volume at every sub-cell position', () => {
+  const broad = make().farField, volumes = [];
+  for (let offset = 0; offset <= broad.cell; offset += .25) {
+    broad.reset(nav(0, offset, .37), pose);
+    volumes.push(broad.stats().sourceVolume);
+  }
+  assert(Math.min(...volumes) > 10, 'A narrow hull must never disappear between broad-grid samples');
+  assert(Math.min(...volumes) / Math.max(...volumes) > .95, 'Sub-cell motion must not pulse the displaced hull volume');
 });
 
 check('reverse travel creates a displaced surface without requiring running engines', () => {
@@ -104,22 +174,29 @@ check('reverse travel creates a displaced surface without requiring running engi
 check('pause and an unchanged simulation time freeze the surface', () => {
   const waves = cruise();
   const frozen = Array.from(waves.height), origin = {...waves.origin};
+  const broad = Array.from(waves.farField.height), broadOrigin = {...waves.farField.origin};
+  const blendOrigin = {...waves.blendOrigin};
   waves.update(4, state(nav(41, 0, 0.2, 10)), pose);
   assert.deepStrictEqual(Array.from(waves.height), frozen);
   waves.update(14, {...state(nav(100, 20, 1, 10)), paused: true}, {...pose, heave: 1});
   assert.deepStrictEqual(Array.from(waves.height), frozen);
   assert.deepStrictEqual(waves.origin, origin);
+  assert.deepStrictEqual(Array.from(waves.farField.height), broad);
+  assert.deepStrictEqual(waves.farField.origin, broadOrigin);
+  assert.deepStrictEqual(waves.blendOrigin, blendOrigin);
 });
 
 check('reset and teleport clear the previous wake without a synthetic splash', () => {
   const manual = cruise(), teleported = cruise();
   manual.reset(nav(800, -200), pose);
   assert.equal(energy(manual), 0);
+  assert.equal(energy(manual.farField), 0);
   manual.update(4, state(nav(800, -200)), pose);
   evolve(manual, 4, 5, 60, () => nav(800, -200));
   assert.equal(energy(manual), 0);
   teleported.update(4 + 1 / 60, state(nav(800, -200)), pose);
   assert.equal(energy(teleported), 0);
+  assert.equal(energy(teleported.farField), 0);
   evolve(teleported, 4 + 1 / 60, 5 + 1 / 60, 60, () => nav(800, -200));
   assert.equal(energy(teleported), 0);
 });
@@ -156,6 +233,32 @@ check('dry terrain blocks waves, and replacing the world rebuilds the land mask'
   assertDryCells(southBank);
   assert(rms(values(waves, 24, 54, 5.25, 6.75, 0.75)) > 0.001, 'Former dry land must now transmit water waves');
   assert.equal(rms(values(waves, 24, 54, -15, -9)), 0, 'The replacement bank must block waves');
+});
+
+check('rock faces reflect arriving wave energy back into water at both resolutions', () => {
+  for (const layer of [() => make({size: 128, farField: false}), () => make().farField]) {
+    const open = layer(), bank = layer();
+    bank.setWorld({height: (x, z) => z >= 12 ? 1 : -8});
+    for (const waves of [open, bank]) {
+      waves.update(0, state(nav()), pose);
+      evolve(waves, 0, 1, 60, () => nav(), t => ({...pose, heave: .3 * Math.sin(Math.PI * t)}));
+      evolve(waves, 1, 4.5, 60, () => nav());
+    }
+    // A no-flux wall has the same reflected solution as a mirrored source.
+    // The actual wall is the cell face immediately before the first dry row.
+    const mirror = 24 - bank.cell;
+    let cross = 0, reflectedEnergy = 0, expectedEnergy = 0;
+    for (let x = -3; x <= 20; x += .75) for (let z = 3; z <= 9; z += .75) {
+      const reflection = bank.sample(x, z) - open.sample(x, z);
+      const expected = open.sample(x, mirror - z);
+      cross += reflection * expected;
+      reflectedEnergy += reflection * reflection;
+      expectedEnergy += expected * expected;
+    }
+    assert(reflectedEnergy > .001, 'Rock impact must return measurable wave energy toward the hull');
+    assert(cross / Math.sqrt(reflectedEnergy * expectedEnergy) > .98, 'Reflected wave must travel back with the phase of a solid coastal boundary');
+    assert.equal(rms(values(bank, -3, 20, 15, 24)), 0, 'Reflection must not transmit waves through dry rock');
+  }
 });
 
 check('rapid motion and storm heave, pitch and roll remain finite and bounded', () => {

@@ -26,4 +26,5 @@ __pycache__/
 credentials*.json
 *service-account*.json
 node_modules/
+/release/
 *.log

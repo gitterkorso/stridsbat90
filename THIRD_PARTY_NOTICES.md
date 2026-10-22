@@ -9,6 +9,10 @@ Projektets egen källkod, verktyg och egen dokumentation omfattas av [MIT-licens
 - [Three.js r128](https://github.com/mrdoob/three.js/tree/r128)
 - [Ursprunglig licens](https://github.com/mrdoob/three.js/blob/r128/LICENSE)
 
+## Windows-programmets körmiljö
+
+Windows-releasen paketeras med [Electron 45.0.0](https://github.com/electron/electron/tree/v45.0.0) och innehåller Chromium och Node.js. Electron distribueras under MIT; körmiljön innehåller även tredjepartskomponenter med egna licenser. Electrons `LICENSE.electron.txt` och Chromiums `LICENSES.chromium.html` följer med programmet. Byggverktyg och låsta versionsnummer listas i `package.json` och `package-lock.json`.
+
 ## Visuella referenser
 
 Båtmodellen är projektets kodbaserade rekonstruktion. Tillverkarfoton, ritningar, rapporter och andra externa källor som använts för jämförelse omfattas av sina respektive upphovsrätter och villkor. Projektets MIT-licens ger inga rättigheter till dessa original eller till varumärken.

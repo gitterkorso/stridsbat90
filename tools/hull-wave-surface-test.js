@@ -26,20 +26,33 @@ assert.equal(surface.uniforms.hullWaveOrigin.value.x, field.origin.x);
 assert.equal(surface.uniforms.hullWaveOrigin.value.y, field.origin.z);
 assert.equal(map.minFilter, THREE.LinearFilter);
 assert.equal(map.flipY, false);
+const farMap = surface.uniforms.farHullWaveMap.value;
+for (let i = 0; i < field.farField.height.length; i++) {
+  const bytes = farMap.image.data;
+  assert(Math.abs((bytes[i * 4] * 256 + bytes[i * 4 + 1] - 32768) / 8191 - field.farField.height[i]) < .00007,
+    'Far wave texture differs from the propagated field');
+}
+assert.equal(surface.uniforms.hullWaveBlendOrigin.value.x, field.blendOrigin.x);
+assert.equal(surface.uniforms.hullWaveBlendOrigin.value.y, field.blendOrigin.z);
 
 // The surface normal should tilt up toward a crest and down away from it.
 for (let z = 1; z < size - 1; z += 3) for (let x = 1; x < size - 1; x += 3) {
   const i = z * size + x;
-  const cpuDx = (field.sample(field.origin.x + (x + 1) * field.cell, field.origin.z + z * field.cell)
-    - field.sample(field.origin.x + (x - 1) * field.cell, field.origin.z + z * field.cell)) / (2 * field.cell);
+  const cpuDx = (field.sampleLocal(field.origin.x + (x + 1) * field.cell, field.origin.z + z * field.cell)
+    - field.sampleLocal(field.origin.x + (x - 1) * field.cell, field.origin.z + z * field.cell)) / (2 * field.cell);
   assert(Math.abs((gradients[i * 4] * 256 + gradients[i * 4 + 1] - 32768) / 8191 - cpuDx) < .00007, 'GPU slope has the wrong scale or direction');
 }
-const version = map.version, held = Uint8Array.from(texture);
+const version = map.version, farVersion = farMap.version, held = Uint8Array.from(texture);
 state.paused = true;
 surface.update(7, state);
 assert.equal(map.version, version, 'Paused water uploads new GPU data');
+assert.equal(farMap.version, farVersion, 'Paused distant waves upload new GPU data');
 assert.deepEqual(map.image.data, held, 'Paused water moves');
 surface.reset(state.nav);
+for (let i = 0; i < field.farField.height.length; i++) {
+  assert.equal(farMap.image.data[i * 4] * 256 + farMap.image.data[i * 4 + 1], 32768,
+    'Reset leaves distant waves in the rendered surface');
+}
 for (let i = 0; i < size * size; i++) {
   assert.equal(decode(i), 0, 'Reset leaves an offset in the packed water surface');
   assert.equal(gradients[i * 4] * 256 + gradients[i * 4 + 1], 32768);
@@ -48,9 +61,12 @@ for (let i = 0; i < size * size; i++) {
 
 const water = CB90.buildWater(THREE);
 water.setWorld({ start: { x: 0, z: 0 }, height: () => -12 });
-const material = water.mesh.material, foam = water.parts.wake.material, spray = water.parts.spray.material;
-for (const name of ['hullWaveMap', 'hullWaveSlopeMap', 'hullWaveOrigin', 'hullWaveLayout']) {
-  assert.strictEqual(material.uniforms[name], foam.uniforms[name], 'Foam does not follow the rendered wave surface');
+const material = water.mesh.material, spray = water.parts.spray.material;
+assert.equal(water.parts.wake.geometry.drawRange.count, 0, 'Intersecting foam sheets are still drawn');
+for (const [name, uniform] of Object.entries(water.wakeSystem.foamUniforms)) {
+  assert.strictEqual(material.uniforms[name], uniform, 'Persistent foam is not shaded on the water surface');
+}
+for (const name of ['hullWaveMap', 'hullWaveSlopeMap', 'hullWaveOrigin', 'hullWaveLayout', 'farHullWaveMap', 'farHullWaveSlopeMap', 'hullWaveBlendOrigin']) {
   assert.strictEqual(material.uniforms[name], spray.uniforms[name], 'Spray does not land on the rendered wave surface');
 }
 state.paused = false; state.nav.x = 0;
@@ -61,7 +77,17 @@ for (const [x, z] of [[10, 3], [6, -4], [0, 8]]) {
 }
 water.reset(state.nav);
 assert.equal(water.hullWaves.stats().maxAbsHeight, 0, 'Return to start keeps the old swell');
-console.log('PASS signed texture heights/slopes, pause/reset, shared water/foam/spray uniforms and combined height sampling');
+// A rocky coast must modify the incoming sea without creating waves in flat deep water.
+const coastal = CB90.buildWater(THREE);
+coastal.setWorld({start: {x: -12, z: 0}, height: x => x * .5});
+coastal.update(0, {nav: {x: -12, z: 0, heading: 0, speed: 0}});
+let reflectedEnergy = 0;
+for (let t = 0; t < 12; t += .2) {
+  reflectedEnergy += (coastal.sampleHeight(-2, 0, t) - CB90.Sea.height(-2, 0, t)) ** 2;
+  assert(Math.abs(coastal.sampleHeight(-40, 0, t) - CB90.Sea.height(-40, 0, t)) < .002, 'Coast reflection leaks into deep water');
+}
+assert(reflectedEnergy > .005, 'Rocky shore has no reflected/run-up wave motion');
+console.log('PASS signed texture heights/slopes, pause/reset, water foam, shared spray uniforms and coastal wave sampling');
 
 // Strong heave/turns previously exceeded the texture range even though the
 // numerical field was stable. Inspect encoded values, not just solver finiteness.

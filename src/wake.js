@@ -21,40 +21,68 @@ CB90.buildWake = function (THREE, waves, surfaceUniforms, sampleSurface) {
     }
     return {g,arrays,attrs,count,cursor:0,emitted:0};
   }
-  const foam=pool(2400,true),drops=pool(4800,true);
+  const foam=pool(3200,true),drops=pool(4800,true);
+  // Surface foam is a world-space density field sampled by the water material.
+  // Separate transparent quads intersected the displaced water between their
+  // vertices, producing flickering cuts and large rectangular foam fragments.
+  const FOAM_SIZE=512,FOAM_CELL=1,FOAM_SPAN=(FOAM_SIZE-1)*FOAM_CELL;
+  const foamData=new Uint8Array(FOAM_SIZE*FOAM_SIZE*4);
+  const foamTexture=new THREE.DataTexture(foamData,FOAM_SIZE,FOAM_SIZE,THREE.RGBAFormat,THREE.UnsignedByteType);
+  foamTexture.minFilter=foamTexture.magFilter=THREE.LinearFilter;
+  foamTexture.wrapS=foamTexture.wrapT=THREE.ClampToEdgeWrapping;
+  foamTexture.generateMipmaps=false;foamTexture.flipY=false;foamTexture.unpackAlignment=1;
+  foamTexture.encoding=THREE.LinearEncoding;foamTexture.needsUpdate=true;
+  const foamUniforms={wakeFoamMap:{value:foamTexture},wakeFoamOrigin:{value:new THREE.Vector2()},
+    wakeFoamLayout:{value:new THREE.Vector2(FOAM_SIZE,FOAM_SPAN)}};
+  const foamGLSL=`uniform sampler2D wakeFoamMap;uniform vec2 wakeFoamOrigin,wakeFoamLayout;
+    float wakeFoam(vec2 p){
+      vec2 uv=(p-wakeFoamOrigin)/wakeFoamLayout.y;
+      vec2 edge=min(uv,1.0-uv);
+      float coverage=smoothstep(0.0,0.035,min(edge.x,edge.y));
+      vec2 texel=(clamp(uv,0.0,1.0)*(wakeFoamLayout.x-1.0)+0.5)/wakeFoamLayout.x;
+      return texture2D(wakeFoamMap,texel).r*coverage;
+    }`;
+  let foamTick=-Infinity;
+  const smooth=(a,b,x)=>{const f=Math.max(0,Math.min(1,(x-a)/(b-a)));return f*f*(3-2*f);};
+  function updateFoam(t,nav){
+    const tick=Math.floor(t/STEP+1e-6);if(tick===foamTick)return;
+    // Integer world cells keep the texture stationary while it follows the boat.
+    // Bias the coverage aft to retain the long trail at full planing speed.
+    const aft=Math.max(-128,Math.min(128,nav.speed*5.5));
+    const ox=Math.floor((nav.x-Math.cos(nav.heading)*aft-FOAM_SPAN/2)/FOAM_CELL)*FOAM_CELL;
+    const oz=Math.floor((nav.z+Math.sin(nav.heading)*aft-FOAM_SPAN/2)/FOAM_CELL)*FOAM_CELL;
+    foamData.fill(0);
+    const a=foam.arrays;
+    for(let i=0;i<foam.count;i++){
+      const age=t-a.birth[i],f=age/a.life[i];if(age<0||f>=1)continue;
+      const energy=a.energy[i],strength=energy*(1-smooth(0.08,1,f))*0.56;
+      if(strength<0.003)continue;
+      const drift=(1-Math.exp(-age*0.65))/0.65;
+      const x=(a.origin[i*3]+a.velocity[i*3]*drift-ox)/FOAM_CELL;
+      const z=(a.origin[i*3+2]+a.velocity[i*3+2]*drift-oz)/FOAM_CELL;
+      const size=a.diameter[i]+age*(0.32+energy*0.32);
+      // Integrate small boils over a texel footprint instead of losing them
+      // between texels or snapping a bright point to the nearest grid cell.
+      const radius=Math.sqrt(size*size*0.25+FOAM_CELL*FOAM_CELL*0.64)/FOAM_CELL;
+      const invRadius=1/(radius*radius);
+      const x0=Math.max(0,Math.ceil(x-radius)),x1=Math.min(FOAM_SIZE-1,Math.floor(x+radius));
+      const z0=Math.max(0,Math.ceil(z-radius)),z1=Math.min(FOAM_SIZE-1,Math.floor(z+radius));
+      for(let j=z0;j<=z1;j++)for(let k=x0;k<=x1;k++){
+        const r2=((k-x)*(k-x)+(j-z)*(j-z))*invRadius;if(r2>=1)continue;
+        const kernel=(1-r2)*(1-r2),index=(j*FOAM_SIZE+k)*4;
+        foamData[index]=Math.round(foamData[index]+(255-foamData[index])*strength*kernel);
+      }
+    }
+    // Publish the completed data and its matching origin in the same update.
+    foamUniforms.wakeFoamOrigin.value.set(ox,oz);foamTexture.needsUpdate=true;foamTick=tick;
+  }
   const attributes=`uniform float time; attribute vec3 aorigin;attribute vec3 avelocity;
     attribute float abirth,alife,adiameter,aenergy,aseed;varying float vAlpha;varying float vSeed;`;
-  const foamMat=new THREE.ShaderMaterial({uniforms,transparent:true,depthWrite:false,side:THREE.DoubleSide,
-    name:'World-anchored aerated jet and chine foam',
-    vertexShader:`${attributes} ${waves} varying vec2 vUv; varying vec2 vWorld;
-      void main(){float age=max(0.0,time-abirth),f=age/alife;
-        vAlpha=aenergy*(1.0-smoothstep(0.08,1.0,f))*step(0.0,time-abirth);vSeed=aseed;
-        float size=adiameter+age*(0.32+aenergy*0.32);
-        float angle=aseed*6.283;mat2 rot=mat2(cos(angle),-sin(angle),sin(angle),cos(angle));
-        vec2 p=aorigin.xz+avelocity.xz*(1.0-exp(-age*0.65))/0.65+rot*position.xy*size;
-        float h;vec2 slope;sea(p,h,slope);vUv=uv;vWorld=p;
-        gl_Position=projectionMatrix*viewMatrix*vec4(p.x,h+0.045,p.y,1.0);
-        if(f>=1.0)gl_Position=vec4(2.0,2.0,2.0,1.0);
-      }`,
-    fragmentShader:`uniform float daylight;uniform float time;uniform vec3 boat;varying float vAlpha;varying float vSeed;varying vec2 vUv;varying vec2 vWorld;
-      float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
-      float n(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.0-2.0*f);return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x),f.y);}
-      void main(){
-        vec2 d=vWorld-boat.xy;float c=cos(boat.z),s=sin(boat.z);vec2 local=vec2(d.x*c-d.y*s,d.x*s+d.y*c);
-        float width=local.x<9.0?1.63:mix(1.63,0.0,clamp((local.x-9.0)/4.7,0.0,1.0));
-        if(local.x>0.0&&local.x<13.7&&abs(local.y)<width)discard;
-        vec2 p=vUv*2.0-1.0;float r=length(p);
-        float coarse=n(vUv*7.0+vSeed*53.0+time*0.08);
-        float fine=n(vUv*35.0+vSeed*17.0-time*0.04);
-        float edge=1.0-smoothstep(0.38,0.98,r+(coarse-0.5)*0.34);
-        float bubbles=smoothstep(0.20,0.78,coarse*0.65+fine*0.35);
-        float alpha=edge*(0.20+bubbles*0.80)*vAlpha;
-        if(alpha<0.008)discard;
-        gl_FragColor=vec4(mix(vec3(0.25,0.48,0.44),vec3(0.87,0.94,0.89),bubbles)*mix(.035,1.0,daylight),alpha);
-        #include <tonemapping_fragment>
-        #include <encodings_fragment>
-      }`});
-  const wake=new THREE.Mesh(foam.g,foamMat);wake.frustumCulled=false;wake.name='Twin jet foam trail';wake.renderOrder=2;group.add(wake);
+  // Keep the public wake object and emitter attributes for existing inspectors;
+  // its density is now drawn once by the water shader, without a second surface.
+  foam.g.setDrawRange(0,0);
+  const wake=new THREE.Mesh(foam.g,new THREE.MeshBasicMaterial({transparent:true,opacity:0,depthWrite:false}));
+  wake.frustumCulled=false;wake.name='Twin jet foam trail density';group.add(wake);
   const sprayMat=new THREE.ShaderMaterial({uniforms,transparent:true,depthWrite:false,
     name:'Overlapping turbulent sheets of aerated spray',
     vertexShader:`${attributes} ${waves} varying vec2 vUv;
@@ -145,11 +173,14 @@ CB90.buildWake = function (THREE, waves, surfaceUniforms, sampleSurface) {
       }
     }
   }
-  function clear(){for(const p of [foam,drops]){p.arrays.birth.fill(-1000);p.cursor=0;p.attrs.birth.needsUpdate=true;}carry=0;}
+  function clear(){
+    for(const p of [foam,drops]){p.arrays.birth.fill(-1000);p.cursor=0;p.attrs.birth.needsUpdate=true;}
+    foamData.fill(0);foamTexture.needsUpdate=true;foamTick=-Infinity;carry=0;
+  }
   function update(t,state){
     const n=state.nav||{},nav={x:Number(n.x)||0,z:Number(n.z)||0,heading:Number(n.heading)||0,speed:Number(n.speed)||0};
     uniforms.time.value=t;uniforms.boat.value.set(nav.x,nav.z,nav.heading);
-    if(last===null){last=t;previous=nav;return;}
+    if(last===null){last=t;previous=nav;updateFoam(t,nav);return;}
     const dt=t-last;
     if(dt<0||Math.hypot(nav.x-previous.x,nav.z-previous.z)>Math.max(30,Math.abs(nav.speed)*dt+10)){clear();last=t;previous=nav;return;}
     if(dt>0){
@@ -158,8 +189,10 @@ CB90.buildWake = function (THREE, waves, surfaceUniforms, sampleSurface) {
       while(carry>=STEP){carry-=STEP;const f=Math.max(0,1-carry/dt);
         sample(t-carry,{x:previous.x+(nav.x-previous.x)*f,z:previous.z+(nav.z-previous.z)*f,heading:previous.heading+turn*f,speed:nav.speed},state);}
       for(const p of [foam,drops])for(const attr of Object.values(p.attrs))attr.needsUpdate=true;
+      updateFoam(t,nav);
     }
     last=t;previous=nav;
   }
-  return {group,wake,spray,update,clear,stats:()=>({foamEmitted:foam.emitted,sprayEmitted:drops.emitted,capacity:foam.count+drops.count})};
+  return {group,wake,spray,update,clear,foamUniforms,foamGLSL,
+    stats:()=>({foamEmitted:foam.emitted,sprayEmitted:drops.emitted,capacity:foam.count+drops.count})};
 };

@@ -2,7 +2,18 @@
 
 Kör Stridsbåt 90 H genom en procedurellt genererad svensk skärgård, gå ombord och utforska båten i 3D. Modellen har öppningsbara luckor, gångbar interiör, separat styrning av de två vattenjetarna och valbar tid och väder. Skrovet tränger undan vatten och lämnar svallvågor som fortsätter breda ut sig efter att båten har passerat.
 
-All simulering och rendering körs i webbläsaren. Inga API-nycklar, konton eller separat backend behövs. Projektet är en visuell rekonstruktion med förenklad fysik, inte en certifierad simulator eller konstruktionsmodell.
+All simulering och rendering körs lokalt, i Windows-programmet eller webbläsaren. Inga API-nycklar, konton eller separat backend behövs. Projektet är en visuell rekonstruktion med förenklad fysik, inte en certifierad simulator eller konstruktionsmodell.
+
+## Ladda ner för Windows
+
+Hämta programmet från [senaste releasen](https://github.com/gitterkorso/stridsbat90/releases/latest). Välj en av filerna:
+
+- **CB90-H-1.0.0-Windows-x64.exe** — starta direkt, utan installation.
+- **CB90-H-1.0.0-Windows-x64-Setup.exe** — installera för ditt användarkonto med genvägar på skrivbordet och i Start-menyn.
+
+Programmet är för Windows 10/11 på en 64-bitars Intel-/AMD-dator. Allt ingår; du behöver inte installera Node.js eller Chrome. Det fungerar utan internet. **F11** växlar helskärm och **Alt+F4** avslutar. Spelkontrollerna är samma som i webbläsarversionen.
+
+Programfilerna är inte kodsignerade; Windows kan visa att utgivaren är okänd. Kontrollsummor finns i `SHA256SUMS.txt` på releasesidan. Se [releaseinformationen](docs/releases/v1.0.0.md) och [bygginstruktionerna](docs/desktop-release.md).
 
 ## Snabbstart
 
@@ -61,11 +72,11 @@ Båten går på grund där vattnet är grundare än cirka 0,95 m under skrovets 
 
 Skrovet tränger nu undan vatten i ett simulerat höjdfält. När den nedsänkta skrovvolymen flyttas, höjs eller lutar bildas krön och dalar som förändrar vattenytans geometri och reflektioner. Svallvågorna breder ut sig i omvärlden, följer den redan körda färdvägen genom svängar och fortsätter efter att båten stannat. Även en båt som glider med avslagna motorer eller backar skapar svall. Skum och stänk följer den kombinerade vattenytan.
 
-Modellen löser förenklade ekvationer för vågor i grunt vatten på ett lokalt rutnät om cirka 143 × 143 meter. Vågor bromsas vid grund, stoppas av land och dämpas vid rutnätets ytterkant; kraftiga vågor förlorar energi för att undvika orimlig resonans. Rutnätet flyttas i hela celler utan att flytta kvarvarande vågor i världen. Paus fryser simuleringen och återställning rensar gammalt svall. Det är en visuell hydrodynamisk approximation, inte en fullständig strömningsberäkning av CB90 H.
+Modellen löser förenklade ekvationer för vågor i grunt vatten på ett fint rutnät om cirka 191 × 191 meter och ett grövre om 1 533 × 1 533 meter. Grunddämpningen är svag så att svall behåller tydlig vågenergi i över en minut; det större området bevarar även äldre svall när båten kör vidare i hög fart. En mjuk övergång låter svall fortsätta bortom närområdet och ligga kvar när båten kör vidare. Vågor bromsas vid grund och reflekteras mot land; ytterkanten dämpar gradvis bort energin. Kraftiga vågor förlorar energi för att undvika orimlig resonans. Rutnäten flyttas i hela celler utan att flytta kvarvarande vågor i världen. Paus fryser simuleringen och återställning rensar gammalt svall. Det är en visuell hydrodynamisk approximation med begränsad räckvidd, inte en fullständig strömningsberäkning av CB90 H.
 
-Vattenytan har oregelbundna, vinddrivna krusningar i flera skalor som blir lugnare i dimma och tydligare i hårt väder. Fina detaljer tonas bort när de blir mindre än en bildpunkt. Speglingarna bryts av krusningarna och mjukas upp, och solblänket följer solens höjd. En lokal djupkarta från skärgårdens verkliga bottentopografi ger grönare grundområden, mörkare djupvatten och ett diskret strandskum. I oväder syns även brutna skumfläckar på vågkammarna. Djupkartan flyttas stegvis med båten; färg och skum är visuella approximationer, inte en simulering av undervattensljus.
+Vattenytan har oregelbundna, vinddrivna krusningar i flera skalor som blir lugnare i dimma och tydligare i hårt väder. Fina detaljer tonas bort när de blir mindre än en bildpunkt. Speglingarna bryts av krusningarna och mjukas upp, och solblänket följer solens höjd. En lokal djupkarta från skärgårdens verkliga bottentopografi ger grönare grundområden och mörkare djupvatten. Vindvågorna förstärks i grunt vatten och får en förenklad partiell reflektion vid branta klippor; strandskummet följer den våta kustlinjen och vågslagen. Vita skumtoppar bildas på vindvågornas krön och branta svallvågor, tydligare i hårt väder. Djupkartan flyttas stegvis med båten; färg och skum är visuella approximationer, inte en simulering av undervattensljus.
 
-Havet har animerade vågor i flera riktningar, finare vindkrusningar och vinkelberoende reflektioner. I hög grafikkvalitet speglas båten, öarna och himlen varje bildruta, även ombord. Låg kvalitet använder en enklare himmelsspegling. Två separata jetstråk reagerar på motorreglagen, medan sidosprutet ökar med farten. Dropparna faller tillbaka mot ytan och skummet ligger kvar längs den körda vägen, även i svängar och när båten stannar. Back ger ett lokalt utåtriktat svall vid aktern. Vattenjetarnas skum följer vågornas höjd, och den tätaste vattengeometrin följer båten för att bevara detaljer nära kameran.
+Havet har animerade vågor i flera riktningar, finare vindkrusningar och vinkelberoende reflektioner. I hög grafikkvalitet speglas båten, öarna och himlen varje bildruta, även ombord. Låg kvalitet använder en enklare himmelsspegling. Två separata jetstråk reagerar på motorreglagen, medan sidosprutet ökar med farten. Dropparna faller tillbaka mot ytan och skummet ligger kvar längs den körda vägen, även i svängar och när båten stannar. Back ger ett lokalt utåtriktat svall vid aktern. Skummet ritas direkt på vattenytan från en karta förankrad i omvärlden, vilket tar bort skarvar från separata skumytor som skär genom vågorna. Den tätaste vattengeometrin följer båten för att bevara detaljer nära kameran.
 
 Båtens höjdrörelse, stampning och rullning följer vattenytans vindvågor via åtta provpunkter längs skrovet. Båtens eget svall återkopplas inte till flytrörelsen, för att undvika att den förstärker sina egna vågor. Dämpad tröghet, extra förlyft under acceleration, övergång till lägre trim i planing och lutning inåt i svängar ger en mer naturlig gång. Kameran ombord följer skrovets rörelse. Trimkurvan är en visuell approximation, inte uppmätta sjöprovsdata för CB90 H.
 

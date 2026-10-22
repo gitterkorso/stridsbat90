@@ -5064,40 +5064,68 @@ CB90.buildWake = function (THREE, waves, surfaceUniforms, sampleSurface) {
     }
     return {g,arrays,attrs,count,cursor:0,emitted:0};
   }
-  const foam=pool(2400,true),drops=pool(4800,true);
+  const foam=pool(3200,true),drops=pool(4800,true);
+  // Surface foam is a world-space density field sampled by the water material.
+  // Separate transparent quads intersected the displaced water between their
+  // vertices, producing flickering cuts and large rectangular foam fragments.
+  const FOAM_SIZE=512,FOAM_CELL=1,FOAM_SPAN=(FOAM_SIZE-1)*FOAM_CELL;
+  const foamData=new Uint8Array(FOAM_SIZE*FOAM_SIZE*4);
+  const foamTexture=new THREE.DataTexture(foamData,FOAM_SIZE,FOAM_SIZE,THREE.RGBAFormat,THREE.UnsignedByteType);
+  foamTexture.minFilter=foamTexture.magFilter=THREE.LinearFilter;
+  foamTexture.wrapS=foamTexture.wrapT=THREE.ClampToEdgeWrapping;
+  foamTexture.generateMipmaps=false;foamTexture.flipY=false;foamTexture.unpackAlignment=1;
+  foamTexture.encoding=THREE.LinearEncoding;foamTexture.needsUpdate=true;
+  const foamUniforms={wakeFoamMap:{value:foamTexture},wakeFoamOrigin:{value:new THREE.Vector2()},
+    wakeFoamLayout:{value:new THREE.Vector2(FOAM_SIZE,FOAM_SPAN)}};
+  const foamGLSL=`uniform sampler2D wakeFoamMap;uniform vec2 wakeFoamOrigin,wakeFoamLayout;
+    float wakeFoam(vec2 p){
+      vec2 uv=(p-wakeFoamOrigin)/wakeFoamLayout.y;
+      vec2 edge=min(uv,1.0-uv);
+      float coverage=smoothstep(0.0,0.035,min(edge.x,edge.y));
+      vec2 texel=(clamp(uv,0.0,1.0)*(wakeFoamLayout.x-1.0)+0.5)/wakeFoamLayout.x;
+      return texture2D(wakeFoamMap,texel).r*coverage;
+    }`;
+  let foamTick=-Infinity;
+  const smooth=(a,b,x)=>{const f=Math.max(0,Math.min(1,(x-a)/(b-a)));return f*f*(3-2*f);};
+  function updateFoam(t,nav){
+    const tick=Math.floor(t/STEP+1e-6);if(tick===foamTick)return;
+    // Integer world cells keep the texture stationary while it follows the boat.
+    // Bias the coverage aft to retain the long trail at full planing speed.
+    const aft=Math.max(-128,Math.min(128,nav.speed*5.5));
+    const ox=Math.floor((nav.x-Math.cos(nav.heading)*aft-FOAM_SPAN/2)/FOAM_CELL)*FOAM_CELL;
+    const oz=Math.floor((nav.z+Math.sin(nav.heading)*aft-FOAM_SPAN/2)/FOAM_CELL)*FOAM_CELL;
+    foamData.fill(0);
+    const a=foam.arrays;
+    for(let i=0;i<foam.count;i++){
+      const age=t-a.birth[i],f=age/a.life[i];if(age<0||f>=1)continue;
+      const energy=a.energy[i],strength=energy*(1-smooth(0.08,1,f))*0.56;
+      if(strength<0.003)continue;
+      const drift=(1-Math.exp(-age*0.65))/0.65;
+      const x=(a.origin[i*3]+a.velocity[i*3]*drift-ox)/FOAM_CELL;
+      const z=(a.origin[i*3+2]+a.velocity[i*3+2]*drift-oz)/FOAM_CELL;
+      const size=a.diameter[i]+age*(0.32+energy*0.32);
+      // Integrate small boils over a texel footprint instead of losing them
+      // between texels or snapping a bright point to the nearest grid cell.
+      const radius=Math.sqrt(size*size*0.25+FOAM_CELL*FOAM_CELL*0.64)/FOAM_CELL;
+      const invRadius=1/(radius*radius);
+      const x0=Math.max(0,Math.ceil(x-radius)),x1=Math.min(FOAM_SIZE-1,Math.floor(x+radius));
+      const z0=Math.max(0,Math.ceil(z-radius)),z1=Math.min(FOAM_SIZE-1,Math.floor(z+radius));
+      for(let j=z0;j<=z1;j++)for(let k=x0;k<=x1;k++){
+        const r2=((k-x)*(k-x)+(j-z)*(j-z))*invRadius;if(r2>=1)continue;
+        const kernel=(1-r2)*(1-r2),index=(j*FOAM_SIZE+k)*4;
+        foamData[index]=Math.round(foamData[index]+(255-foamData[index])*strength*kernel);
+      }
+    }
+    // Publish the completed data and its matching origin in the same update.
+    foamUniforms.wakeFoamOrigin.value.set(ox,oz);foamTexture.needsUpdate=true;foamTick=tick;
+  }
   const attributes=`uniform float time; attribute vec3 aorigin;attribute vec3 avelocity;
     attribute float abirth,alife,adiameter,aenergy,aseed;varying float vAlpha;varying float vSeed;`;
-  const foamMat=new THREE.ShaderMaterial({uniforms,transparent:true,depthWrite:false,side:THREE.DoubleSide,
-    name:'World-anchored aerated jet and chine foam',
-    vertexShader:`${attributes} ${waves} varying vec2 vUv; varying vec2 vWorld;
-      void main(){float age=max(0.0,time-abirth),f=age/alife;
-        vAlpha=aenergy*(1.0-smoothstep(0.08,1.0,f))*step(0.0,time-abirth);vSeed=aseed;
-        float size=adiameter+age*(0.32+aenergy*0.32);
-        float angle=aseed*6.283;mat2 rot=mat2(cos(angle),-sin(angle),sin(angle),cos(angle));
-        vec2 p=aorigin.xz+avelocity.xz*(1.0-exp(-age*0.65))/0.65+rot*position.xy*size;
-        float h;vec2 slope;sea(p,h,slope);vUv=uv;vWorld=p;
-        gl_Position=projectionMatrix*viewMatrix*vec4(p.x,h+0.045,p.y,1.0);
-        if(f>=1.0)gl_Position=vec4(2.0,2.0,2.0,1.0);
-      }`,
-    fragmentShader:`uniform float daylight;uniform float time;uniform vec3 boat;varying float vAlpha;varying float vSeed;varying vec2 vUv;varying vec2 vWorld;
-      float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
-      float n(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.0-2.0*f);return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x),f.y);}
-      void main(){
-        vec2 d=vWorld-boat.xy;float c=cos(boat.z),s=sin(boat.z);vec2 local=vec2(d.x*c-d.y*s,d.x*s+d.y*c);
-        float width=local.x<9.0?1.63:mix(1.63,0.0,clamp((local.x-9.0)/4.7,0.0,1.0));
-        if(local.x>0.0&&local.x<13.7&&abs(local.y)<width)discard;
-        vec2 p=vUv*2.0-1.0;float r=length(p);
-        float coarse=n(vUv*7.0+vSeed*53.0+time*0.08);
-        float fine=n(vUv*35.0+vSeed*17.0-time*0.04);
-        float edge=1.0-smoothstep(0.38,0.98,r+(coarse-0.5)*0.34);
-        float bubbles=smoothstep(0.20,0.78,coarse*0.65+fine*0.35);
-        float alpha=edge*(0.20+bubbles*0.80)*vAlpha;
-        if(alpha<0.008)discard;
-        gl_FragColor=vec4(mix(vec3(0.25,0.48,0.44),vec3(0.87,0.94,0.89),bubbles)*mix(.035,1.0,daylight),alpha);
-        #include <tonemapping_fragment>
-        #include <encodings_fragment>
-      }`});
-  const wake=new THREE.Mesh(foam.g,foamMat);wake.frustumCulled=false;wake.name='Twin jet foam trail';wake.renderOrder=2;group.add(wake);
+  // Keep the public wake object and emitter attributes for existing inspectors;
+  // its density is now drawn once by the water shader, without a second surface.
+  foam.g.setDrawRange(0,0);
+  const wake=new THREE.Mesh(foam.g,new THREE.MeshBasicMaterial({transparent:true,opacity:0,depthWrite:false}));
+  wake.frustumCulled=false;wake.name='Twin jet foam trail density';group.add(wake);
   const sprayMat=new THREE.ShaderMaterial({uniforms,transparent:true,depthWrite:false,
     name:'Overlapping turbulent sheets of aerated spray',
     vertexShader:`${attributes} ${waves} varying vec2 vUv;
@@ -5188,11 +5216,14 @@ CB90.buildWake = function (THREE, waves, surfaceUniforms, sampleSurface) {
       }
     }
   }
-  function clear(){for(const p of [foam,drops]){p.arrays.birth.fill(-1000);p.cursor=0;p.attrs.birth.needsUpdate=true;}carry=0;}
+  function clear(){
+    for(const p of [foam,drops]){p.arrays.birth.fill(-1000);p.cursor=0;p.attrs.birth.needsUpdate=true;}
+    foamData.fill(0);foamTexture.needsUpdate=true;foamTick=-Infinity;carry=0;
+  }
   function update(t,state){
     const n=state.nav||{},nav={x:Number(n.x)||0,z:Number(n.z)||0,heading:Number(n.heading)||0,speed:Number(n.speed)||0};
     uniforms.time.value=t;uniforms.boat.value.set(nav.x,nav.z,nav.heading);
-    if(last===null){last=t;previous=nav;return;}
+    if(last===null){last=t;previous=nav;updateFoam(t,nav);return;}
     const dt=t-last;
     if(dt<0||Math.hypot(nav.x-previous.x,nav.z-previous.z)>Math.max(30,Math.abs(nav.speed)*dt+10)){clear();last=t;previous=nav;return;}
     if(dt>0){
@@ -5201,10 +5232,12 @@ CB90.buildWake = function (THREE, waves, surfaceUniforms, sampleSurface) {
       while(carry>=STEP){carry-=STEP;const f=Math.max(0,1-carry/dt);
         sample(t-carry,{x:previous.x+(nav.x-previous.x)*f,z:previous.z+(nav.z-previous.z)*f,heading:previous.heading+turn*f,speed:nav.speed},state);}
       for(const p of [foam,drops])for(const attr of Object.values(p.attrs))attr.needsUpdate=true;
+      updateFoam(t,nav);
     }
     last=t;previous=nav;
   }
-  return {group,wake,spray,update,clear,stats:()=>({foamEmitted:foam.emitted,sprayEmitted:drops.emitted,capacity:foam.count+drops.count})};
+  return {group,wake,spray,update,clear,foamUniforms,foamGLSL,
+    stats:()=>({foamEmitted:foam.emitted,sprayEmitted:drops.emitted,capacity:foam.count+drops.count})};
 };
 
 </script>
@@ -5232,6 +5265,21 @@ CB90.createWaterDepth = function (THREE) {
     seabedMap: { value: active }, seabedOrigin: { value: new THREE.Vector2() },
     seabedSpan: { value: SPAN }, seabedReady: { value: 0 }
   };
+  // BA carries the signed seabed gradient, so shoreline reflection and foam use
+  // the same coast as the depth shading without four extra fragment lookups.
+  const glsl = `
+    uniform sampler2D seabedMap;
+    uniform vec2 seabedOrigin;
+    uniform float seabedSpan, seabedReady;
+    void seabed(vec2 p,out float bottom,out vec2 gradient,out float coverage){
+      vec2 uv=(p-seabedOrigin)/seabedSpan;
+      vec2 edge=min(uv,1.0-uv);
+      coverage=seabedReady*smoothstep(0.0,0.065,min(edge.x,edge.y));
+      vec4 packed=texture2D(seabedMap,(clamp(uv,0.0,1.0)*127.0+0.5)/128.0);
+      bottom=-24.0+dot(packed.rg,vec2(65280.0,255.0))/65535.0*32.0;
+      gradient=(packed.ba*255.0-128.0)/63.0;
+    }
+  `;
   function begin(x, z) {
     // Keep every generation on the same world grid, including negative positions.
     job = { x: Math.round((x - SPAN / 2) / CELL) * CELL,
@@ -5249,6 +5297,14 @@ CB90.createWaterDepth = function (THREE) {
       }
     }
     if (job.row === SIZE) {
+      const height = i => MIN_HEIGHT + (data[i * 4] * 256 + data[i * 4 + 1]) / 65535 * HEIGHT_RANGE;
+      for (let z = 0; z < SIZE; z++) for (let x = 0; x < SIZE; x++) {
+        const i = z * SIZE + x;
+        const dx = (height(z * SIZE + Math.min(SIZE - 1, x + 1)) - height(z * SIZE + Math.max(0, x - 1))) / (CELL * (x === 0 || x === SIZE - 1 ? 1 : 2));
+        const dz = (height(Math.min(SIZE - 1, z + 1) * SIZE + x) - height(Math.max(0, z - 1) * SIZE + x)) / (CELL * (z === 0 || z === SIZE - 1 ? 1 : 2));
+        data[i * 4 + 2] = Math.round(Math.max(-2, Math.min(2, dx)) * 63 + 128);
+        data[i * 4 + 3] = Math.round(Math.max(-2, Math.min(2, dz)) * 63 + 128);
+      }
       // Publish data and its matching coordinates together. Never expose partial rows.
       const old = active; active = staging; staging = old;
       active.needsUpdate = true;
@@ -5277,7 +5333,20 @@ CB90.createWaterDepth = function (THREE) {
     }
     rows(ROWS_PER_UPDATE);
   }
-  return { uniforms, setWorld, update };
+  function sample(x, z) {
+    if (!uniforms.seabedReady.value) return { bottom: -24, dx: 0, dz: 0, coverage: 0 };
+    const u = (x - uniforms.seabedOrigin.value.x) / SPAN, v = (z - uniforms.seabedOrigin.value.y) / SPAN;
+    const edge = Math.max(0, Math.min(1, Math.min(u, v, 1 - u, 1 - v) / .065));
+    const gx = Math.max(0, Math.min(SIZE - 1.000001, u * (SIZE - 1)));
+    const gz = Math.max(0, Math.min(SIZE - 1.000001, v * (SIZE - 1)));
+    const ix = Math.floor(gx), iz = Math.floor(gz), fx = gx - ix, fz = gz - iz;
+    const data = active.image.data, i = (iz * SIZE + ix) * 4;
+    const channel = c => (data[i + c] * (1 - fx) + data[i + 4 + c] * fx) * (1 - fz)
+      + (data[i + SIZE * 4 + c] * (1 - fx) + data[i + (SIZE + 1) * 4 + c] * fx) * fz;
+    return { bottom: MIN_HEIGHT + (channel(0) * 256 + channel(1)) / 65535 * HEIGHT_RANGE,
+      dx: (channel(2) - 128) / 63, dz: (channel(3) - 128) / 63, coverage: edge * edge * (3 - 2 * edge) };
+  }
+  return { uniforms, glsl, setWorld, update, sample };
 };
 
 </script>
@@ -5289,7 +5358,8 @@ CB90.createWaterDepth = function (THREE) {
 // B is the submerged hull volume per square metre. Its change pushes water ahead
 // of the moving hull and draws water into the vacated footprint. The resulting
 // crests/troughs then travel independently of the boat, including after it stops.
-// This is a bounded near-field approximation, not a full 3-D fluid/planing solver.
+// A fine moving grid resolves the hull; a broad, slowly recentered grid carries
+// the long wake away from it. Both are bounded shallow-water approximations.
 window.CB90 = window.CB90 || {};
 CB90.createHullWaves = function (options) {
   'use strict';
@@ -5299,18 +5369,25 @@ CB90.createHullWaves = function (options) {
   const smooth = (lo, hi, value) => {
     const v = clamp((value - lo) / (hi - lo), 0, 1); return v * v * (3 - 2 * v);
   };
-  const size = Math.round(clamp(finite(options.size, 192), 48, 256));
-  const cell = clamp(finite(options.cell, .75), .35, 2);
+  const size = Math.round(clamp(finite(options.size, 256), 48, options._farField ? 512 : 256));
+  const cell = clamp(finite(options.cell, .75), .35, 4);
   const count = size * size, span = (size - 1) * cell;
   const speed = clamp(finite(options.waveSpeed, 4.8), 1, 8), speed2 = speed * speed;
   // The 2-D Courant bound is c*dt/dx < 1/sqrt(2), including custom grid options.
-  const fixedDt = Math.min(1 / 60, cell / (speed * 2));
+  const fixedDt = Math.min(options._farField ? 1 / 15 : 1 / 60, cell / (speed * 2));
   const recenterDistance = clamp(finite(options.recenterDistance, 12), cell, span * .22);
   const height = new Float32Array(count), fluxX = new Float32Array(count), fluxZ = new Float32Array(count);
   const displacement = new Float32Array(count), depth = new Float32Array(count);
   const coeffX = new Float32Array(count), coeffZ = new Float32Array(count);
   const sponge = new Float32Array(count), scratch = new Float32Array(count);
   const origin = { x: 0, z: 0 };
+  const blendOrigin = { x: 0, z: 0 };
+  // The broad layer is an independently resolved low-frequency approximation
+  // of the same displacement source, not a second additive wake. Blending the
+  // two resolutions lets outward waves survive beyond the fine grid's sponge.
+  const farField = options._farField || options.farField === false ? null : CB90.createHullWaves({
+    _farField: true, size: 512, cell: 3, waveSpeed: speed, recenterDistance: 24
+  });
   const fallback = [
     { x: 0, keelY: -.8, keelZ: 0, chineY: -.25, chineZ: 1.5, deckY: 1.1, deckZ: 1.65 },
     { x: 3, keelY: -.8, keelZ: 0, chineY: -.21, chineZ: 1.64, deckY: 1.16, deckZ: 1.83 },
@@ -5331,10 +5408,19 @@ CB90.createHullWaves = function (options) {
     profile.push(p);
   }
   const edgeWidth = Math.min(18, size / 6);
+  const blendStart = Math.min((edgeWidth + 6) * cell + recenterDistance, span * .23);
+  const blendEnd = Math.min(blendStart + 24 * cell, span * .38);
+  // Coarse cells need enough area samples to integrate a three-metre-wide hull
+  // at every sub-cell position; four point samples can miss it completely.
+  const areaSamples = options._farField ? 6 : 2;
+  // Weak open-water drag: preserve travelling swell for minutes. This damps
+  // height AND momentum, so .004/s means an energy half-life of about 87 s.
+  // The edge sponge and nonlinear crest breaking remain independent safeguards.
+  const waterDrag = .004;
   for (let j = 0; j < size; j++) for (let i = 0; i < size; i++) {
     const edge = Math.min(i, j, size - 1 - i, size - 1 - j);
     const edgeAmount = Math.max(0, 1 - edge / edgeWidth);
-    sponge[j * size + i] = Math.exp(-fixedDt * (.025 + 5 * edgeAmount * edgeAmount));
+    sponge[j * size + i] = Math.exp(-fixedDt * (waterDrag + 5 * edgeAmount * edgeAmount));
   }
   let world = null, initialized = false, lastTime = null, simulationTime = null;
   let previous = null, sourcePose = null, sourceBounds = null, active = false;
@@ -5389,18 +5475,19 @@ CB90.createHullWaves = function (options) {
     const i0 = Math.min(next.i0, old.i0), i1 = Math.max(next.i1, old.i1);
     const j0 = Math.min(next.j0, old.j0), j1 = Math.max(next.j1, old.j1);
     const c = Math.cos(pose.heading), s = Math.sin(pose.heading);
-    const sp = Math.sin(pose.pitch), sr = Math.sin(pose.roll), offset = cell * .25;
+    const sp = Math.sin(pose.pitch), sr = Math.sin(pose.roll);
     let changed = false;
     for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
       const k = j * size + i;
       let volume = 0;
       if (depth[k] > 0 && i >= next.i0 && i <= next.i1 && j >= next.j0 && j <= next.j1) {
         const wx = origin.x + i * cell - pose.x, wz = origin.z + j * cell - pose.z;
-        // Four area samples smooth sub-cell hull movement and conserve both the
+        // Area samples smooth sub-cell hull movement and conserve both the
         // positive leading and negative trailing displacement sources.
-        for (let a = -1; a <= 1; a += 2) for (let b = -1; b <= 1; b += 2) {
-          const dx = wx + a * offset, dz = wz + b * offset;
-          volume += column(dx * c - dz * s, dx * s + dz * c, pose, sp, sr) * .25;
+        for (let a = 0; a < areaSamples; a++) for (let b = 0; b < areaSamples; b++) {
+          const dx = wx + ((a + .5) / areaSamples - .5) * cell;
+          const dz = wz + ((b + .5) / areaSamples - .5) * cell;
+          volume += column(dx * c - dz * s, dx * s + dz * c, pose, sp, sr) / (areaSamples * areaSamples);
         }
       }
       // Round before differencing: an unchanged footprint is exactly source-free.
@@ -5413,10 +5500,13 @@ CB90.createHullWaves = function (options) {
     return changed;
   }
   function reset(nav, pose) {
+    if (farField) farField.reset(nav, pose);
     previous = snapshot(nav, pose); sourcePose = null; sourceBounds = null;
     const c = Math.cos(previous.heading), s = Math.sin(previous.heading);
     origin.x = Math.round((previous.x + 6 * c - span / 2) / cell) * cell;
     origin.z = Math.round((previous.z - 6 * s - span / 2) / cell) * cell;
+    blendOrigin.x = previous.x + 6 * c - span / 2;
+    blendOrigin.z = previous.z - 6 * s - span / 2;
     height.fill(0); fluxX.fill(0); fluxZ.fill(0); displacement.fill(0);
     for (let j = 0; j < size; j++) for (let i = 0; i < size; i++) depth[j * size + i] = readDepth(origin.x + i * cell, origin.z + j * cell);
     coefficients(); rasterize(previous, true);
@@ -5425,6 +5515,13 @@ CB90.createHullWaves = function (options) {
   }
   function recenter(pose) {
     const x = pose.x + 6 * Math.cos(pose.heading), z = pose.z - 6 * Math.sin(pose.heading);
+    // Texture origins snap to whole cells, but the resolution transition tracks
+    // the hull continuously. Otherwise every grid shift changes an entire band
+    // of already-emitted waves in a single frame.
+    if (blendOrigin.x !== x - span / 2 || blendOrigin.z !== z - span / 2) {
+      blendOrigin.x = x - span / 2; blendOrigin.z = z - span / 2;
+      if (farField) revision++;
+    }
     if (Math.max(Math.abs(x - origin.x - span / 2), Math.abs(z - origin.z - span / 2)) <= recenterDistance) return;
     const ox = Math.round((x - span / 2) / cell) * cell, oz = Math.round((z - span / 2) / cell) * cell;
     const dx = Math.round((ox - origin.x) / cell), dz = Math.round((oz - origin.z) / cell);
@@ -5473,7 +5570,7 @@ CB90.createHullWaves = function (options) {
     if (!active) { height.fill(0); fluxX.fill(0); fluxZ.fill(0); }
     revision++;
   }
-  function update(t, state, pose) {
+  function updateLocal(t, state, pose) {
     if (!Number.isFinite(t) || !state || !state.nav) return api;
     const current = snapshot(state.nav, pose);
     if (!initialized) reset(state.nav, pose);
@@ -5499,12 +5596,26 @@ CB90.createHullWaves = function (options) {
     lastTime = t; previous = current;
     return api;
   }
-  function sample(x, z) {
+  function update(t, state, pose) {
+    updateLocal(t, state, pose);
+    if (farField) farField.update(t, state, pose);
+    return api;
+  }
+  function sampleLocal(x, z) {
     if (!initialized || !Number.isFinite(x) || !Number.isFinite(z)) return 0;
     const gx = (x - origin.x) / cell, gz = (z - origin.z) / cell;
     if (gx < 0 || gz < 0 || gx >= size - 1 || gz >= size - 1) return 0;
     const i = Math.floor(gx), j = Math.floor(gz), u = gx - i, v = gz - j, k = j * size + i;
     return (height[k] * (1 - u) + height[k + 1] * u) * (1 - v) + (height[k + size] * (1 - u) + height[k + size + 1] * u) * v;
+  }
+  function sample(x, z) {
+    if (!farField) return sampleLocal(x, z);
+    if (!initialized || !Number.isFinite(x) || !Number.isFinite(z)) return 0;
+    const edge = Math.min(x - blendOrigin.x, z - blendOrigin.z, blendOrigin.x + span - x, blendOrigin.z + span - z);
+    const weight = smooth(blendStart, blendEnd, edge);
+    if (weight === 1) return sampleLocal(x, z);
+    const broad = farField.sampleLocal(x, z);
+    return broad + (sampleLocal(x, z) - broad) * weight;
   }
   function stats() {
     let min = 0, max = 0, energy = 0, volume = 0, sourceVolume = 0;
@@ -5513,15 +5624,18 @@ CB90.createHullWaves = function (options) {
       energy += h * h + (fluxX[k] * fluxX[k] + fluxZ[k] * fluxZ[k]) / speed2;
     }
     return { min, max, maxAbsHeight: Math.max(-min, max), energy: energy * cell * cell, volume: volume * cell * cell,
-      sourceVolume: sourceVolume * cell * cell, steps, active, revision, origin: { x: origin.x, z: origin.z } };
+      sourceVolume: sourceVolume * cell * cell, steps, active, revision, origin: { x: origin.x, z: origin.z },
+      far: farField ? farField.stats() : null };
   }
   function setWorld(next) {
+    if (farField) farField.setWorld(next);
     world = next && typeof next.height === 'function' ? next : null;
     initialized = false; active = false; lastTime = simulationTime = null;
     height.fill(0); fluxX.fill(0); fluxZ.fill(0); displacement.fill(0); revision++;
     return api;
   }
-  const api = { update, reset, sample, sampleHeight: sample, stats, setWorld, height, size, cell, span, origin,
+  const api = { update, reset, sample, sampleLocal, sampleHeight: sample, stats, setWorld, height, size, cell, span, origin,
+    farField, blendOrigin, blendStart, blendEnd,
     get revision() { return revision; } };
   return api;
 };
@@ -5535,37 +5649,55 @@ window.CB90 = window.CB90 || {};
 CB90.createHullWaveSurface = function (THREE) {
   'use strict';
   const field = CB90.createHullWaves();
-  const size = field.size, cell = field.cell, span = (size - 1) * cell;
-  const data = new Uint8Array(size * size * 4);
-  const texture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.UnsignedByteType);
-  const slopes = new Uint8Array(size * size * 4);
-  const slopeTexture = new THREE.DataTexture(slopes, size, size, THREE.RGBAFormat, THREE.UnsignedByteType);
-  for (const map of [texture, slopeTexture]) {
-    map.minFilter = map.magFilter = THREE.LinearFilter;
-    map.wrapS = map.wrapT = THREE.ClampToEdgeWrapping;
-    map.generateMipmaps = false; map.flipY = false;
-    map.encoding = THREE.LinearEncoding; map.unpackAlignment = 1;
+  function layer(grid) {
+    const size = grid.size;
+    const data = new Uint8Array(size * size * 4), slopes = new Uint8Array(size * size * 4);
+    const texture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.UnsignedByteType);
+    const slopeTexture = new THREE.DataTexture(slopes, size, size, THREE.RGBAFormat, THREE.UnsignedByteType);
+    for (const map of [texture, slopeTexture]) {
+      map.minFilter = map.magFilter = THREE.LinearFilter;
+      map.wrapS = map.wrapT = THREE.ClampToEdgeWrapping;
+      map.generateMipmaps = false; map.flipY = false;
+      map.encoding = THREE.LinearEncoding; map.unpackAlignment = 1;
+    }
+    return { grid, data, slopes, texture, slopeTexture, origin: { value: new THREE.Vector2() },
+      layout: { value: new THREE.Vector2(size, grid.span) }, revision: -1 };
   }
-  const uniforms = {
-    hullWaveMap: { value: texture },
-    hullWaveSlopeMap: { value: slopeTexture },
-    hullWaveOrigin: { value: new THREE.Vector2() },
-    hullWaveLayout: { value: new THREE.Vector2(size, span) }
-  };
+  const near = layer(field), far = layer(field.farField);
+  const uniforms = {};
+  for (const [prefix, map] of [['hullWave', near], ['farHullWave', far]]) {
+    uniforms[prefix + 'Map'] = { value: map.texture };
+    uniforms[prefix + 'SlopeMap'] = { value: map.slopeTexture };
+    uniforms[prefix + 'Origin'] = map.origin;
+    uniforms[prefix + 'Layout'] = map.layout;
+  }
+  uniforms.hullWaveBlend = { value: new THREE.Vector2(field.blendStart, field.blendEnd) };
+  uniforms.hullWaveBlendOrigin = { value: new THREE.Vector2() };
   const glsl = `
-    uniform sampler2D hullWaveMap, hullWaveSlopeMap;
-    uniform vec2 hullWaveOrigin, hullWaveLayout;
-    float hullWave(vec2 p,out vec2 slope){
-      vec2 uv=(p-hullWaveOrigin)/hullWaveLayout.y;
-      vec2 edge=min(uv,1.0-uv);
-      float coverage=smoothstep(0.0,0.045,min(edge.x,edge.y));
-      vec2 texel=(clamp(uv,0.0,1.0)*(hullWaveLayout.x-1.0)+0.5)/hullWaveLayout.x;
-      vec4 packed=texture2D(hullWaveMap,texel);
+    uniform sampler2D hullWaveMap, hullWaveSlopeMap, farHullWaveMap, farHullWaveSlopeMap;
+    uniform vec2 hullWaveOrigin, hullWaveLayout, farHullWaveOrigin, farHullWaveLayout, hullWaveBlend, hullWaveBlendOrigin;
+    float waveLayer(vec2 p,sampler2D heights,sampler2D normals,vec2 origin,vec2 gridLayout,out vec2 slope){
+      vec2 uv=(p-origin)/gridLayout.y;
+      vec2 texel=(clamp(uv,0.0,1.0)*(gridLayout.x-1.0)+0.5)/gridLayout.x;
+      float coverage=step(0.0,min(min(uv.x,uv.y),min(1.0-uv.x,1.0-uv.y)));
+      vec4 packed=texture2D(heights,texel);
       // Exactly zero at integer code 32768; RG decoding commutes with bilinear filtering.
       float h=(dot(packed.rg,vec2(65280.0,255.0))-32768.0)/8191.0;
-      vec4 gradients=texture2D(hullWaveSlopeMap,texel);
+      vec4 gradients=texture2D(normals,texel);
       slope=(vec2(dot(gradients.rg,vec2(65280.0,255.0)),dot(gradients.ba,vec2(65280.0,255.0)))-32768.0)/8191.0*coverage;
       return h*coverage;
+    }
+    float hullWave(vec2 p,out vec2 slope){
+      vec2 nearSlope,farSlope;
+      float a=waveLayer(p,hullWaveMap,hullWaveSlopeMap,hullWaveOrigin,hullWaveLayout,nearSlope);
+      float b=waveLayer(p,farHullWaveMap,farHullWaveSlopeMap,farHullWaveOrigin,farHullWaveLayout,farSlope);
+      vec2 local=p-hullWaveBlendOrigin,edge=min(local,hullWaveLayout.y-local);
+      float distance=min(edge.x,edge.y);
+      float f=clamp((distance-hullWaveBlend.x)/(hullWaveBlend.y-hullWaveBlend.x),0.0,1.0);
+      float blend=f*f*(3.0-2.0*f);
+      vec2 direction=edge.x<edge.y?vec2(local.x<hullWaveLayout.y*0.5?1.0:-1.0,0.0):vec2(0.0,local.y<hullWaveLayout.y*0.5?1.0:-1.0);
+      slope=mix(farSlope,nearSlope,blend)+(a-b)*direction*6.0*f*(1.0-f)/(hullWaveBlend.y-hullWaveBlend.x);
+      return mix(b,a,blend);
     }
     void sea(vec2 p,out float height,out vec2 slope){
       ambientSea(p,height,slope);
@@ -5574,11 +5706,11 @@ CB90.createHullWaveSurface = function (THREE) {
       slope+=hullSlope;
     }
   `;
-  let revision = -1;
   const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
-  function sync() {
-    if (revision === field.revision) return;
-    const heights = field.height;
+  function syncLayer(map) {
+    const { grid, data, slopes, texture, slopeTexture } = map;
+    if (map.revision === grid.revision) return;
+    const heights = grid.height, size = grid.size, cell = grid.cell;
     for (let z = 0; z < size; z++) for (let x = 0; x < size; x++) {
       const i = z * size + x, o = i * 4;
       const h = Math.round(clamp(heights[i], -4, 4) * 8191 + 32768);
@@ -5590,10 +5722,14 @@ CB90.createHullWaveSurface = function (THREE) {
       slopes[o] = sx >>> 8; slopes[o + 1] = sx & 255;
       slopes[o + 2] = sz >>> 8; slopes[o + 3] = sz & 255;
     }
-    uniforms.hullWaveOrigin.value.set(field.origin.x, field.origin.z);
+    map.origin.value.set(grid.origin.x, grid.origin.z);
     texture.needsUpdate = true;
     slopeTexture.needsUpdate = true;
-    revision = field.revision;
+    map.revision = grid.revision;
+  }
+  function sync() {
+    syncLayer(near); syncLayer(far);
+    uniforms.hullWaveBlendOrigin.value.set(field.blendOrigin.x, field.blendOrigin.z);
   }
   function update(t, state, pose) { field.update(t, state, pose); sync(); }
   function reset(nav, pose) { field.reset(nav, pose); sync(); }
@@ -5623,7 +5759,38 @@ CB90.buildWater = function (THREE) {
     reflectionEnabled: { value: 0 }, hullInverse: { value: new THREE.Matrix4() }
   };
   Object.assign(uniforms,CB90.weatherUniforms(THREE),depthMap.uniforms,hullWaves.uniforms,{seaStrength:CB90.Sea.strength});
-  const waves=CB90.Sea.glsl.replace('void sea(', 'void ambientSea(')+hullWaves.glsl;
+  const smooth=(a,b,v)=>{const f=Math.max(0,Math.min(1,(v-a)/(b-a)));return f*f*(3-2*f);};
+  const coastGLSL=`
+    ${depthMap.glsl}
+    void ambientSea(vec2 p,out float height,out vec2 slope){
+      openSea(p,height,slope);
+      float bottom,coverage;vec2 gradient;seabed(p,bottom,gradient,coverage);
+      float steepness=length(gradient),depth=max(0.0,-bottom);
+      vec2 normal=gradient/max(steepness,0.001);
+      float shoreDistance=depth/max(steepness,0.05);
+      float reflection=coverage*smoothstep(0.08,0.55,steepness)*0.38*exp(-shoreDistance*0.14)*(1.0-smoothstep(0.0,0.8,bottom));
+      if(reflection>0.001){
+        float reflected;vec2 reflectedSlope;
+        openSea(p+normal*shoreDistance*2.0,reflected,reflectedSlope);
+        height+=reflected*reflection;
+        slope+=(reflectedSlope-normal*2.0*dot(reflectedSlope,normal))*reflection;
+      }
+      float shoaling=1.0+0.18*coverage*smoothstep(0.1,1.5,depth)*(1.0-smoothstep(1.5,6.0,depth));
+      height*=shoaling;slope*=shoaling;
+    }
+  `;
+  const waves=CB90.Sea.glsl.replace('void sea(', 'void openSea(')+coastGLSL+hullWaves.glsl;
+  function sampleHeight(x,z,t){
+    const bed=depthMap.sample(x,z),steepness=Math.hypot(bed.dx,bed.dz),depth=Math.max(0,-bed.bottom);
+    const distance=depth/Math.max(steepness,.05),nx=bed.dx/Math.max(steepness,.001),nz=bed.dz/Math.max(steepness,.001);
+    const reflection=bed.coverage*smooth(.08,.55,steepness)*.38*Math.exp(-distance*.14)*(1-smooth(0,.8,bed.bottom));
+    let height=CB90.Sea.height(x,z,t)+.015;
+    if(reflection>.001)height+=(CB90.Sea.height(x+nx*distance*2,z+nz*distance*2,t)+.015)*reflection;
+    height*=1+.18*bed.coverage*smooth(.1,1.5,depth)*(1-smooth(1.5,6,depth));
+    return height-.015+hullWaves.sample(x,z);
+  }
+  const wakeSystem=CB90.buildWake(THREE,waves,{...hullWaves.uniforms,...depthMap.uniforms},sampleHeight);
+  Object.assign(uniforms,wakeSystem.foamUniforms);
   // Clip water only inside the moving hull, retaining water underneath a lifted bow.
   const vec=v=>'vec3('+v.map(n=>n.toFixed(5)).join(',')+')';
   const sections=CB90.STATIONS;
@@ -5656,9 +5823,6 @@ CB90.buildWater = function (THREE) {
       uniform float fogDensity;
       uniform vec3 seaColor;
       uniform vec2 windVelocity;
-      uniform sampler2D seabedMap;
-      uniform vec2 seabedOrigin;
-      uniform float seabedSpan, seabedReady;
       uniform vec4 boat;
       uniform mat4 hullInverse;
       ${hullGLSL}
@@ -5678,6 +5842,7 @@ CB90.buildWater = function (THREE) {
           du*vec2(b-a+crossTerm*u.y,c-a+crossTerm*u.x));
       }
       ${waves}
+      ${wakeSystem.foamGLSL}
       void main(){
         vec2 p=vWorldPosition.xz;
         // Derivatives must be evaluated before any neighbouring hull fragment is discarded.
@@ -5692,7 +5857,10 @@ CB90.buildWater = function (THREE) {
           }
         }
         float height; vec2 deriv;
-        sea(p,height,deriv);
+        ambientSea(p,height,deriv);
+        float hullHeight;vec2 hullSlope;hullHeight=hullWave(p,hullSlope);
+        height+=hullHeight;deriv+=hullSlope;
+        vec2 waveSlope=deriv;
         float dist=length(cameraPosition-vWorldPosition);
         float detail=1.0-smoothstep(70.0,360.0,dist);
         vec2 wind=windVelocity/max(length(windVelocity),0.001);
@@ -5716,11 +5884,7 @@ CB90.buildWater = function (THREE) {
         float ndv=max(dot(N,V),0.0);
         float fresnel=0.0204+0.9796*pow(1.0-ndv,5.0);
         // Read the real seabed, fading the local map into deep water at its boundary.
-        vec2 depthUV=(p-seabedOrigin)/seabedSpan;
-        vec2 edge=min(depthUV,1.0-depthUV);
-        float depthCoverage=seabedReady*smoothstep(0.0,0.065,min(edge.x,edge.y));
-        vec2 packed=texture2D(seabedMap,(clamp(depthUV,0.0,1.0)*127.0+0.5)/128.0).rg;
-        float bottom=-24.0+dot(packed,vec2(65280.0,255.0))/65535.0*32.0;
+        float bottom,depthCoverage;vec2 bedGradient;seabed(p,bottom,bedGradient,depthCoverage);
         float waterDepth=mix(24.0,max(0.0,vWorldPosition.y-bottom),depthCoverage);
         vec3 deep=seaColor*(0.82+0.18*noise(p*0.045));
         float crest=smoothstep(-0.10,0.24,height/max(seaStrength,0.1));
@@ -5764,14 +5928,30 @@ CB90.buildWater = function (THREE) {
         float F=0.0204+0.9796*pow(1.0-max(dot(V,H),0.0),5.0);
         vec3 sunColor=mix(vec3(1.0,0.57,0.30),vec3(1.0,0.94,0.82),smoothstep(0.02,0.45,sunDirection.y));
         color+=sunColor*min(4.0,D*Gv*Gl*F/max(4.0*ndv,0.001))*1.7*daylight*(1.0-cloudCover);
-        // Sparse broken crests in rough weather, and a soft wash along the actual shallows.
-        float foamNoise=noise(p*0.72-wind*time*0.32)*0.65+noise(p*2.1+time*0.16)*0.35;
-        float whitecaps=smoothstep(1.15,2.65,seaStrength)*smoothstep(0.15,0.26,height/max(seaStrength,0.1));
-        whitecaps*=smoothstep(0.52,0.76,foamNoise);
-        float shore=(1.0-smoothstep(0.15,1.15,waterDepth))*smoothstep(-0.12,0.12,-bottom)*depthCoverage;
-        float wash=0.5+0.5*sin(waterDepth*7.0-time*1.7+noise(p*0.7)*4.0);
-        float foam=clamp(whitecaps*0.60+shore*smoothstep(0.36,0.73,foamNoise)*wash*0.42,0.0,0.65);
-        color=mix(color,vec3(0.66,0.76,0.72)*mix(0.035,1.0,daylight),foam);
+        // Foam is shaded on this surface, so it cannot intersect the waves as a
+        // separate sheet. Breaking is driven by crests and steepness, not ripples.
+        vec2 foamCoord=mat2(0.8,-0.6,0.6,0.8)*p;
+        float foamNoise=noise(p*0.72-wind*time*0.32)*0.55+noise(foamCoord*1.93+time*0.16)*0.45;
+        float bubbleNoise=noise(foamCoord*6.3-wind*time*0.12)*0.55+noise(p*10.7+time*0.09)*0.45;
+        float bubbles=mix(0.65,smoothstep(0.22,0.76,bubbleNoise),fine);
+        float crestHeight=(height-hullHeight)/max(seaStrength,0.1);
+        float capWeather=smoothstep(0.45,2.1,seaStrength);
+        float whitecaps=smoothstep(0.25,0.6,seaStrength)*smoothstep(0.12,0.25,crestHeight);
+        whitecaps*=smoothstep(mix(0.60,0.40,capWeather),mix(0.76,0.67,capWeather),foamNoise);
+        whitecaps*=0.65+0.35*smoothstep(0.03,0.16,length(waveSlope));
+        float crestFilter=min(0.16,footprint*length(hullSlope)*0.5);
+        float wakeCrest=smoothstep(0.06-crestFilter,0.32+crestFilter,hullHeight)*smoothstep(0.04,0.26,length(hullSlope));
+        wakeCrest*=smoothstep(0.36,0.72,foamNoise);
+        // A travelling crest runs up the wet rock edge, then leaves broken wash
+        // in shallow water. Steep rock faces reflect a part of the ambient wave.
+        float wetEdge=smoothstep(-0.04,0.08,waterDepth);
+        float shore=(1.0-smoothstep(0.12,1.45,waterDepth))*depthCoverage*wetEdge;
+        float impact=smoothstep(-0.08,0.22,height)*(0.45+0.55*smoothstep(0.06,0.45,length(bedGradient)));
+        float shoreFoam=shore*(0.20+impact*0.80)*smoothstep(0.24,0.62,foamNoise);
+        float trail=wakeFoam(p)*(0.45+0.55*smoothstep(0.25,0.70,foamNoise));
+        float foam=clamp(max(trail,max(whitecaps*0.9,wakeCrest*0.62))+shoreFoam*0.85,0.0,0.96);
+        foam*=mix(1.0,wetEdge,depthCoverage)*(0.78+0.22*bubbles);
+        color=mix(color,mix(vec3(0.65,0.77,0.75),vec3(0.94,0.98,0.96),bubbles)*mix(0.035,1.0,daylight),foam);
         // A soft horizon also keeps the infinite plane free from a hard edge.
         float fog=1.0-exp(-dist*dist*fogDensity*fogDensity);
         color=mix(color,skyHorizon,fog);
@@ -5793,8 +5973,6 @@ CB90.buildWater = function (THREE) {
   const mesh=new THREE.Mesh(geometry,material); mesh.name='water'; mesh.frustumCulled=false;
   mesh.position.y=-0.015; group.add(mesh);
 
-  function sampleHeight(x,z,t){return CB90.Sea.height(x,z,t)+hullWaves.sample(x,z);}
-  const wakeSystem=CB90.buildWake(THREE,waves,hullWaves.uniforms,sampleHeight);
   const wake=wakeSystem.wake;group.add(wakeSystem.group);
   let followsHull=false, hullPose=null;
   const hullFrame=new THREE.Matrix4();

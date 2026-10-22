@@ -4,7 +4,8 @@
 // B is the submerged hull volume per square metre. Its change pushes water ahead
 // of the moving hull and draws water into the vacated footprint. The resulting
 // crests/troughs then travel independently of the boat, including after it stops.
-// This is a bounded near-field approximation, not a full 3-D fluid/planing solver.
+// A fine moving grid resolves the hull; a broad, slowly recentered grid carries
+// the long wake away from it. Both are bounded shallow-water approximations.
 window.CB90 = window.CB90 || {};
 CB90.createHullWaves = function (options) {
   'use strict';
@@ -14,18 +15,25 @@ CB90.createHullWaves = function (options) {
   const smooth = (lo, hi, value) => {
     const v = clamp((value - lo) / (hi - lo), 0, 1); return v * v * (3 - 2 * v);
   };
-  const size = Math.round(clamp(finite(options.size, 192), 48, 256));
-  const cell = clamp(finite(options.cell, .75), .35, 2);
+  const size = Math.round(clamp(finite(options.size, 256), 48, options._farField ? 512 : 256));
+  const cell = clamp(finite(options.cell, .75), .35, 4);
   const count = size * size, span = (size - 1) * cell;
   const speed = clamp(finite(options.waveSpeed, 4.8), 1, 8), speed2 = speed * speed;
   // The 2-D Courant bound is c*dt/dx < 1/sqrt(2), including custom grid options.
-  const fixedDt = Math.min(1 / 60, cell / (speed * 2));
+  const fixedDt = Math.min(options._farField ? 1 / 15 : 1 / 60, cell / (speed * 2));
   const recenterDistance = clamp(finite(options.recenterDistance, 12), cell, span * .22);
   const height = new Float32Array(count), fluxX = new Float32Array(count), fluxZ = new Float32Array(count);
   const displacement = new Float32Array(count), depth = new Float32Array(count);
   const coeffX = new Float32Array(count), coeffZ = new Float32Array(count);
   const sponge = new Float32Array(count), scratch = new Float32Array(count);
   const origin = { x: 0, z: 0 };
+  const blendOrigin = { x: 0, z: 0 };
+  // The broad layer is an independently resolved low-frequency approximation
+  // of the same displacement source, not a second additive wake. Blending the
+  // two resolutions lets outward waves survive beyond the fine grid's sponge.
+  const farField = options._farField || options.farField === false ? null : CB90.createHullWaves({
+    _farField: true, size: 512, cell: 3, waveSpeed: speed, recenterDistance: 24
+  });
   const fallback = [
     { x: 0, keelY: -.8, keelZ: 0, chineY: -.25, chineZ: 1.5, deckY: 1.1, deckZ: 1.65 },
     { x: 3, keelY: -.8, keelZ: 0, chineY: -.21, chineZ: 1.64, deckY: 1.16, deckZ: 1.83 },
@@ -46,10 +54,19 @@ CB90.createHullWaves = function (options) {
     profile.push(p);
   }
   const edgeWidth = Math.min(18, size / 6);
+  const blendStart = Math.min((edgeWidth + 6) * cell + recenterDistance, span * .23);
+  const blendEnd = Math.min(blendStart + 24 * cell, span * .38);
+  // Coarse cells need enough area samples to integrate a three-metre-wide hull
+  // at every sub-cell position; four point samples can miss it completely.
+  const areaSamples = options._farField ? 6 : 2;
+  // Weak open-water drag: preserve travelling swell for minutes. This damps
+  // height AND momentum, so .004/s means an energy half-life of about 87 s.
+  // The edge sponge and nonlinear crest breaking remain independent safeguards.
+  const waterDrag = .004;
   for (let j = 0; j < size; j++) for (let i = 0; i < size; i++) {
     const edge = Math.min(i, j, size - 1 - i, size - 1 - j);
     const edgeAmount = Math.max(0, 1 - edge / edgeWidth);
-    sponge[j * size + i] = Math.exp(-fixedDt * (.025 + 5 * edgeAmount * edgeAmount));
+    sponge[j * size + i] = Math.exp(-fixedDt * (waterDrag + 5 * edgeAmount * edgeAmount));
   }
   let world = null, initialized = false, lastTime = null, simulationTime = null;
   let previous = null, sourcePose = null, sourceBounds = null, active = false;
@@ -104,18 +121,19 @@ CB90.createHullWaves = function (options) {
     const i0 = Math.min(next.i0, old.i0), i1 = Math.max(next.i1, old.i1);
     const j0 = Math.min(next.j0, old.j0), j1 = Math.max(next.j1, old.j1);
     const c = Math.cos(pose.heading), s = Math.sin(pose.heading);
-    const sp = Math.sin(pose.pitch), sr = Math.sin(pose.roll), offset = cell * .25;
+    const sp = Math.sin(pose.pitch), sr = Math.sin(pose.roll);
     let changed = false;
     for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
       const k = j * size + i;
       let volume = 0;
       if (depth[k] > 0 && i >= next.i0 && i <= next.i1 && j >= next.j0 && j <= next.j1) {
         const wx = origin.x + i * cell - pose.x, wz = origin.z + j * cell - pose.z;
-        // Four area samples smooth sub-cell hull movement and conserve both the
+        // Area samples smooth sub-cell hull movement and conserve both the
         // positive leading and negative trailing displacement sources.
-        for (let a = -1; a <= 1; a += 2) for (let b = -1; b <= 1; b += 2) {
-          const dx = wx + a * offset, dz = wz + b * offset;
-          volume += column(dx * c - dz * s, dx * s + dz * c, pose, sp, sr) * .25;
+        for (let a = 0; a < areaSamples; a++) for (let b = 0; b < areaSamples; b++) {
+          const dx = wx + ((a + .5) / areaSamples - .5) * cell;
+          const dz = wz + ((b + .5) / areaSamples - .5) * cell;
+          volume += column(dx * c - dz * s, dx * s + dz * c, pose, sp, sr) / (areaSamples * areaSamples);
         }
       }
       // Round before differencing: an unchanged footprint is exactly source-free.
@@ -128,10 +146,13 @@ CB90.createHullWaves = function (options) {
     return changed;
   }
   function reset(nav, pose) {
+    if (farField) farField.reset(nav, pose);
     previous = snapshot(nav, pose); sourcePose = null; sourceBounds = null;
     const c = Math.cos(previous.heading), s = Math.sin(previous.heading);
     origin.x = Math.round((previous.x + 6 * c - span / 2) / cell) * cell;
     origin.z = Math.round((previous.z - 6 * s - span / 2) / cell) * cell;
+    blendOrigin.x = previous.x + 6 * c - span / 2;
+    blendOrigin.z = previous.z - 6 * s - span / 2;
     height.fill(0); fluxX.fill(0); fluxZ.fill(0); displacement.fill(0);
     for (let j = 0; j < size; j++) for (let i = 0; i < size; i++) depth[j * size + i] = readDepth(origin.x + i * cell, origin.z + j * cell);
     coefficients(); rasterize(previous, true);
@@ -140,6 +161,13 @@ CB90.createHullWaves = function (options) {
   }
   function recenter(pose) {
     const x = pose.x + 6 * Math.cos(pose.heading), z = pose.z - 6 * Math.sin(pose.heading);
+    // Texture origins snap to whole cells, but the resolution transition tracks
+    // the hull continuously. Otherwise every grid shift changes an entire band
+    // of already-emitted waves in a single frame.
+    if (blendOrigin.x !== x - span / 2 || blendOrigin.z !== z - span / 2) {
+      blendOrigin.x = x - span / 2; blendOrigin.z = z - span / 2;
+      if (farField) revision++;
+    }
     if (Math.max(Math.abs(x - origin.x - span / 2), Math.abs(z - origin.z - span / 2)) <= recenterDistance) return;
     const ox = Math.round((x - span / 2) / cell) * cell, oz = Math.round((z - span / 2) / cell) * cell;
     const dx = Math.round((ox - origin.x) / cell), dz = Math.round((oz - origin.z) / cell);
@@ -188,7 +216,7 @@ CB90.createHullWaves = function (options) {
     if (!active) { height.fill(0); fluxX.fill(0); fluxZ.fill(0); }
     revision++;
   }
-  function update(t, state, pose) {
+  function updateLocal(t, state, pose) {
     if (!Number.isFinite(t) || !state || !state.nav) return api;
     const current = snapshot(state.nav, pose);
     if (!initialized) reset(state.nav, pose);
@@ -214,12 +242,26 @@ CB90.createHullWaves = function (options) {
     lastTime = t; previous = current;
     return api;
   }
-  function sample(x, z) {
+  function update(t, state, pose) {
+    updateLocal(t, state, pose);
+    if (farField) farField.update(t, state, pose);
+    return api;
+  }
+  function sampleLocal(x, z) {
     if (!initialized || !Number.isFinite(x) || !Number.isFinite(z)) return 0;
     const gx = (x - origin.x) / cell, gz = (z - origin.z) / cell;
     if (gx < 0 || gz < 0 || gx >= size - 1 || gz >= size - 1) return 0;
     const i = Math.floor(gx), j = Math.floor(gz), u = gx - i, v = gz - j, k = j * size + i;
     return (height[k] * (1 - u) + height[k + 1] * u) * (1 - v) + (height[k + size] * (1 - u) + height[k + size + 1] * u) * v;
+  }
+  function sample(x, z) {
+    if (!farField) return sampleLocal(x, z);
+    if (!initialized || !Number.isFinite(x) || !Number.isFinite(z)) return 0;
+    const edge = Math.min(x - blendOrigin.x, z - blendOrigin.z, blendOrigin.x + span - x, blendOrigin.z + span - z);
+    const weight = smooth(blendStart, blendEnd, edge);
+    if (weight === 1) return sampleLocal(x, z);
+    const broad = farField.sampleLocal(x, z);
+    return broad + (sampleLocal(x, z) - broad) * weight;
   }
   function stats() {
     let min = 0, max = 0, energy = 0, volume = 0, sourceVolume = 0;
@@ -228,15 +270,18 @@ CB90.createHullWaves = function (options) {
       energy += h * h + (fluxX[k] * fluxX[k] + fluxZ[k] * fluxZ[k]) / speed2;
     }
     return { min, max, maxAbsHeight: Math.max(-min, max), energy: energy * cell * cell, volume: volume * cell * cell,
-      sourceVolume: sourceVolume * cell * cell, steps, active, revision, origin: { x: origin.x, z: origin.z } };
+      sourceVolume: sourceVolume * cell * cell, steps, active, revision, origin: { x: origin.x, z: origin.z },
+      far: farField ? farField.stats() : null };
   }
   function setWorld(next) {
+    if (farField) farField.setWorld(next);
     world = next && typeof next.height === 'function' ? next : null;
     initialized = false; active = false; lastTime = simulationTime = null;
     height.fill(0); fluxX.fill(0); fluxZ.fill(0); displacement.fill(0); revision++;
     return api;
   }
-  const api = { update, reset, sample, sampleHeight: sample, stats, setWorld, height, size, cell, span, origin,
+  const api = { update, reset, sample, sampleLocal, sampleHeight: sample, stats, setWorld, height, size, cell, span, origin,
+    farField, blendOrigin, blendStart, blendEnd,
     get revision() { return revision; } };
   return api;
 };

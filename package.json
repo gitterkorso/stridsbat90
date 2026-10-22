@@ -1,0 +1,60 @@
+{
+  "name": "cb90-h",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Kör Stridsbåt 90 H genom en svensk skärgård och utforska båten i 3D.",
+  "author": "gitterkorso",
+  "license": "MIT",
+  "homepage": "https://github.com/gitterkorso/stridsbat90",
+  "repository": { "type": "git", "url": "https://github.com/gitterkorso/stridsbat90.git" },
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "build": "node tools/build.js",
+    "start": "npm run build && electron .",
+    "test:desktop": "node tools/desktop-test.cjs",
+    "release:win": "npm run build && electron-builder --win nsis portable --x64 --publish never && node tools/release-checksums.cjs"
+  },
+  "devDependencies": {
+    "electron": "45.0.0",
+    "electron-builder": "26.15.3",
+    "playwright": "1.64.1"
+  },
+  "build": {
+    "appId": "io.github.gitterkorso.cb90h",
+    "productName": "CB90 H",
+    "copyright": "Copyright © 2026 gitterkorso",
+    "asar": true,
+    "directories": { "output": "release", "buildResources": "desktop" },
+    "files": [
+      "desktop/main.cjs",
+      "desktop/icon.ico",
+      "desktop/icon.png",
+      "dist/index.html",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md",
+      "src/vendor/LICENSE.threejs"
+    ],
+    "win": {
+      "icon": "desktop/icon.ico",
+      "target": [ { "target": "nsis", "arch": ["x64"] }, { "target": "portable", "arch": ["x64"] } ],
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "artifactName": "CB90-H-${version}-Windows-x64-Setup.exe",
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "CB90 H",
+      "installerLanguages": ["sv_SE", "en_US"],
+      "language": "1053",
+      "license": "LICENSE"
+    },
+    "portable": {
+      "artifactName": "CB90-H-${version}-Windows-x64.exe",
+      "requestExecutionLevel": "user"
+    }
+  }
+}

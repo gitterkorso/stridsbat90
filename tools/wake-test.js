@@ -28,4 +28,35 @@ assert(a.aorigin.getZ(0)<-1.6);assert(a.avelocity.getX(0)>0);
 const one=CB90.buildWake(THREE,waves);for(let i=0;i<60;i++)one.update(i/30,{nav:{},engineP:1,engineS:0});
 assert(one.wake.geometry.attributes.aorigin.getZ(0)<0);
 const f30=run(12,.7,3,30).stats(),f60=run(12,.7,3,60).stats();assert(Math.abs(f30.sprayEmitted-f60.sprayEmitted)<40);
-console.log('PASS idle, low/high speed, coasting, stationary thrust, pause, persistent world positions, teleport reset, reverse, separate engines and frame-rate independence');
+// The water draws foam from one world-space density map, so no transparent
+// foam triangles can cut through waves or flicker against the water surface.
+assert.equal(fast.wake.geometry.drawRange.count,0);
+assert(fast.foamGLSL.includes('float wakeFoam(vec2 p)'));
+assert(stationary.foamUniforms.wakeFoamMap.value.image.data.some(v=>v>0));
+function density(w,x,z){
+ const u=w.foamUniforms,o=u.wakeFoamOrigin.value,n=u.wakeFoamLayout.value.x,s=u.wakeFoamLayout.value.y;
+ const px=(x-o.x)/s*(n-1),pz=(z-o.y)/s*(n-1),ix=Math.floor(px),iz=Math.floor(pz),fx=px-ix,fz=pz-iz;
+ if(ix<0||iz<0||ix>=n-1||iz>=n-1)return 0;
+ const a=u.wakeFoamMap.value.image.data,at=(x,z)=>a[(z*n+x)*4]/255;
+ return (at(ix,iz)*(1-fx)+at(ix+1,iz)*fx)*(1-fz)+(at(ix,iz+1)*(1-fx)+at(ix+1,iz+1)*fx)*fz;
+}
+const anchored=CB90.buildWake(THREE,waves);
+anchored.update(0,{nav:{},enginesOn:false});
+const particle=anchored.wake.geometry.attributes;
+particle.aorigin.setXYZ(0,-10,0,0);particle.avelocity.setXYZ(0,0,0,0);
+particle.abirth.setX(0,0);particle.alife.setX(0,10);particle.adiameter.setX(0,6);particle.aenergy.setX(0,1);
+anchored.update(.1,{nav:{},enginesOn:false});
+const originalDensity=density(anchored,-10,0),oldOrigin=anchored.foamUniforms.wakeFoamOrigin.value.x;
+assert(originalDensity>.4,'A live surface boil must appear in the water density map');
+anchored.update(.2,{nav:{x:12},enginesOn:false});
+assert.notEqual(anchored.foamUniforms.wakeFoamOrigin.value.x,oldOrigin,'Exercise texture recentering');
+assert.equal(density(anchored,-10,0),originalDensity,'Foam remains at its emitted world position when the boat moves');
+assert.equal(density(anchored,2,0),0,'Foam must not move with the boat');
+const pausedData=anchored.foamUniforms.wakeFoamMap.value.image.data.slice();
+anchored.update(.2,{nav:{x:12},enginesOn:false});
+assert.deepEqual(anchored.foamUniforms.wakeFoamMap.value.image.data,pausedData,'Paused foam must not animate or change density');
+anchored.update(11,{nav:{x:12},enginesOn:false});
+assert.equal(density(anchored,-10,0),0,'Old foam dissipates completely');
+stationary.clear();
+assert(stationary.foamUniforms.wakeFoamMap.value.image.data.every(v=>v===0),'Reset removes all surface foam immediately');
+console.log('PASS idle, speed, coasting, thrust, spray, pause, world-anchored foam map, recentering, dissipation, reset, reverse, separate engines and frame-rate independence');

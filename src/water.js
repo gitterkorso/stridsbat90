@@ -16,7 +16,38 @@ CB90.buildWater = function (THREE) {
     reflectionEnabled: { value: 0 }, hullInverse: { value: new THREE.Matrix4() }
   };
   Object.assign(uniforms,CB90.weatherUniforms(THREE),depthMap.uniforms,hullWaves.uniforms,{seaStrength:CB90.Sea.strength});
-  const waves=CB90.Sea.glsl.replace('void sea(', 'void ambientSea(')+hullWaves.glsl;
+  const smooth=(a,b,v)=>{const f=Math.max(0,Math.min(1,(v-a)/(b-a)));return f*f*(3-2*f);};
+  const coastGLSL=`
+    ${depthMap.glsl}
+    void ambientSea(vec2 p,out float height,out vec2 slope){
+      openSea(p,height,slope);
+      float bottom,coverage;vec2 gradient;seabed(p,bottom,gradient,coverage);
+      float steepness=length(gradient),depth=max(0.0,-bottom);
+      vec2 normal=gradient/max(steepness,0.001);
+      float shoreDistance=depth/max(steepness,0.05);
+      float reflection=coverage*smoothstep(0.08,0.55,steepness)*0.38*exp(-shoreDistance*0.14)*(1.0-smoothstep(0.0,0.8,bottom));
+      if(reflection>0.001){
+        float reflected;vec2 reflectedSlope;
+        openSea(p+normal*shoreDistance*2.0,reflected,reflectedSlope);
+        height+=reflected*reflection;
+        slope+=(reflectedSlope-normal*2.0*dot(reflectedSlope,normal))*reflection;
+      }
+      float shoaling=1.0+0.18*coverage*smoothstep(0.1,1.5,depth)*(1.0-smoothstep(1.5,6.0,depth));
+      height*=shoaling;slope*=shoaling;
+    }
+  `;
+  const waves=CB90.Sea.glsl.replace('void sea(', 'void openSea(')+coastGLSL+hullWaves.glsl;
+  function sampleHeight(x,z,t){
+    const bed=depthMap.sample(x,z),steepness=Math.hypot(bed.dx,bed.dz),depth=Math.max(0,-bed.bottom);
+    const distance=depth/Math.max(steepness,.05),nx=bed.dx/Math.max(steepness,.001),nz=bed.dz/Math.max(steepness,.001);
+    const reflection=bed.coverage*smooth(.08,.55,steepness)*.38*Math.exp(-distance*.14)*(1-smooth(0,.8,bed.bottom));
+    let height=CB90.Sea.height(x,z,t)+.015;
+    if(reflection>.001)height+=(CB90.Sea.height(x+nx*distance*2,z+nz*distance*2,t)+.015)*reflection;
+    height*=1+.18*bed.coverage*smooth(.1,1.5,depth)*(1-smooth(1.5,6,depth));
+    return height-.015+hullWaves.sample(x,z);
+  }
+  const wakeSystem=CB90.buildWake(THREE,waves,{...hullWaves.uniforms,...depthMap.uniforms},sampleHeight);
+  Object.assign(uniforms,wakeSystem.foamUniforms);
   // Clip water only inside the moving hull, retaining water underneath a lifted bow.
   const vec=v=>'vec3('+v.map(n=>n.toFixed(5)).join(',')+')';
   const sections=CB90.STATIONS;
@@ -49,9 +80,6 @@ CB90.buildWater = function (THREE) {
       uniform float fogDensity;
       uniform vec3 seaColor;
       uniform vec2 windVelocity;
-      uniform sampler2D seabedMap;
-      uniform vec2 seabedOrigin;
-      uniform float seabedSpan, seabedReady;
       uniform vec4 boat;
       uniform mat4 hullInverse;
       ${hullGLSL}
@@ -71,6 +99,7 @@ CB90.buildWater = function (THREE) {
           du*vec2(b-a+crossTerm*u.y,c-a+crossTerm*u.x));
       }
       ${waves}
+      ${wakeSystem.foamGLSL}
       void main(){
         vec2 p=vWorldPosition.xz;
         // Derivatives must be evaluated before any neighbouring hull fragment is discarded.
@@ -85,7 +114,10 @@ CB90.buildWater = function (THREE) {
           }
         }
         float height; vec2 deriv;
-        sea(p,height,deriv);
+        ambientSea(p,height,deriv);
+        float hullHeight;vec2 hullSlope;hullHeight=hullWave(p,hullSlope);
+        height+=hullHeight;deriv+=hullSlope;
+        vec2 waveSlope=deriv;
         float dist=length(cameraPosition-vWorldPosition);
         float detail=1.0-smoothstep(70.0,360.0,dist);
         vec2 wind=windVelocity/max(length(windVelocity),0.001);
@@ -109,11 +141,7 @@ CB90.buildWater = function (THREE) {
         float ndv=max(dot(N,V),0.0);
         float fresnel=0.0204+0.9796*pow(1.0-ndv,5.0);
         // Read the real seabed, fading the local map into deep water at its boundary.
-        vec2 depthUV=(p-seabedOrigin)/seabedSpan;
-        vec2 edge=min(depthUV,1.0-depthUV);
-        float depthCoverage=seabedReady*smoothstep(0.0,0.065,min(edge.x,edge.y));
-        vec2 packed=texture2D(seabedMap,(clamp(depthUV,0.0,1.0)*127.0+0.5)/128.0).rg;
-        float bottom=-24.0+dot(packed,vec2(65280.0,255.0))/65535.0*32.0;
+        float bottom,depthCoverage;vec2 bedGradient;seabed(p,bottom,bedGradient,depthCoverage);
         float waterDepth=mix(24.0,max(0.0,vWorldPosition.y-bottom),depthCoverage);
         vec3 deep=seaColor*(0.82+0.18*noise(p*0.045));
         float crest=smoothstep(-0.10,0.24,height/max(seaStrength,0.1));
@@ -157,14 +185,30 @@ CB90.buildWater = function (THREE) {
         float F=0.0204+0.9796*pow(1.0-max(dot(V,H),0.0),5.0);
         vec3 sunColor=mix(vec3(1.0,0.57,0.30),vec3(1.0,0.94,0.82),smoothstep(0.02,0.45,sunDirection.y));
         color+=sunColor*min(4.0,D*Gv*Gl*F/max(4.0*ndv,0.001))*1.7*daylight*(1.0-cloudCover);
-        // Sparse broken crests in rough weather, and a soft wash along the actual shallows.
-        float foamNoise=noise(p*0.72-wind*time*0.32)*0.65+noise(p*2.1+time*0.16)*0.35;
-        float whitecaps=smoothstep(1.15,2.65,seaStrength)*smoothstep(0.15,0.26,height/max(seaStrength,0.1));
-        whitecaps*=smoothstep(0.52,0.76,foamNoise);
-        float shore=(1.0-smoothstep(0.15,1.15,waterDepth))*smoothstep(-0.12,0.12,-bottom)*depthCoverage;
-        float wash=0.5+0.5*sin(waterDepth*7.0-time*1.7+noise(p*0.7)*4.0);
-        float foam=clamp(whitecaps*0.60+shore*smoothstep(0.36,0.73,foamNoise)*wash*0.42,0.0,0.65);
-        color=mix(color,vec3(0.66,0.76,0.72)*mix(0.035,1.0,daylight),foam);
+        // Foam is shaded on this surface, so it cannot intersect the waves as a
+        // separate sheet. Breaking is driven by crests and steepness, not ripples.
+        vec2 foamCoord=mat2(0.8,-0.6,0.6,0.8)*p;
+        float foamNoise=noise(p*0.72-wind*time*0.32)*0.55+noise(foamCoord*1.93+time*0.16)*0.45;
+        float bubbleNoise=noise(foamCoord*6.3-wind*time*0.12)*0.55+noise(p*10.7+time*0.09)*0.45;
+        float bubbles=mix(0.65,smoothstep(0.22,0.76,bubbleNoise),fine);
+        float crestHeight=(height-hullHeight)/max(seaStrength,0.1);
+        float capWeather=smoothstep(0.45,2.1,seaStrength);
+        float whitecaps=smoothstep(0.25,0.6,seaStrength)*smoothstep(0.12,0.25,crestHeight);
+        whitecaps*=smoothstep(mix(0.60,0.40,capWeather),mix(0.76,0.67,capWeather),foamNoise);
+        whitecaps*=0.65+0.35*smoothstep(0.03,0.16,length(waveSlope));
+        float crestFilter=min(0.16,footprint*length(hullSlope)*0.5);
+        float wakeCrest=smoothstep(0.06-crestFilter,0.32+crestFilter,hullHeight)*smoothstep(0.04,0.26,length(hullSlope));
+        wakeCrest*=smoothstep(0.36,0.72,foamNoise);
+        // A travelling crest runs up the wet rock edge, then leaves broken wash
+        // in shallow water. Steep rock faces reflect a part of the ambient wave.
+        float wetEdge=smoothstep(-0.04,0.08,waterDepth);
+        float shore=(1.0-smoothstep(0.12,1.45,waterDepth))*depthCoverage*wetEdge;
+        float impact=smoothstep(-0.08,0.22,height)*(0.45+0.55*smoothstep(0.06,0.45,length(bedGradient)));
+        float shoreFoam=shore*(0.20+impact*0.80)*smoothstep(0.24,0.62,foamNoise);
+        float trail=wakeFoam(p)*(0.45+0.55*smoothstep(0.25,0.70,foamNoise));
+        float foam=clamp(max(trail,max(whitecaps*0.9,wakeCrest*0.62))+shoreFoam*0.85,0.0,0.96);
+        foam*=mix(1.0,wetEdge,depthCoverage)*(0.78+0.22*bubbles);
+        color=mix(color,mix(vec3(0.65,0.77,0.75),vec3(0.94,0.98,0.96),bubbles)*mix(0.035,1.0,daylight),foam);
         // A soft horizon also keeps the infinite plane free from a hard edge.
         float fog=1.0-exp(-dist*dist*fogDensity*fogDensity);
         color=mix(color,skyHorizon,fog);
@@ -186,8 +230,6 @@ CB90.buildWater = function (THREE) {
   const mesh=new THREE.Mesh(geometry,material); mesh.name='water'; mesh.frustumCulled=false;
   mesh.position.y=-0.015; group.add(mesh);
 
-  function sampleHeight(x,z,t){return CB90.Sea.height(x,z,t)+hullWaves.sample(x,z);}
-  const wakeSystem=CB90.buildWake(THREE,waves,hullWaves.uniforms,sampleHeight);
   const wake=wakeSystem.wake;group.add(wakeSystem.group);
   let followsHull=false, hullPose=null;
   const hullFrame=new THREE.Matrix4();

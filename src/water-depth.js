@@ -20,6 +20,21 @@ CB90.createWaterDepth = function (THREE) {
     seabedMap: { value: active }, seabedOrigin: { value: new THREE.Vector2() },
     seabedSpan: { value: SPAN }, seabedReady: { value: 0 }
   };
+  // BA carries the signed seabed gradient, so shoreline reflection and foam use
+  // the same coast as the depth shading without four extra fragment lookups.
+  const glsl = `
+    uniform sampler2D seabedMap;
+    uniform vec2 seabedOrigin;
+    uniform float seabedSpan, seabedReady;
+    void seabed(vec2 p,out float bottom,out vec2 gradient,out float coverage){
+      vec2 uv=(p-seabedOrigin)/seabedSpan;
+      vec2 edge=min(uv,1.0-uv);
+      coverage=seabedReady*smoothstep(0.0,0.065,min(edge.x,edge.y));
+      vec4 packed=texture2D(seabedMap,(clamp(uv,0.0,1.0)*127.0+0.5)/128.0);
+      bottom=-24.0+dot(packed.rg,vec2(65280.0,255.0))/65535.0*32.0;
+      gradient=(packed.ba*255.0-128.0)/63.0;
+    }
+  `;
   function begin(x, z) {
     // Keep every generation on the same world grid, including negative positions.
     job = { x: Math.round((x - SPAN / 2) / CELL) * CELL,
@@ -37,6 +52,14 @@ CB90.createWaterDepth = function (THREE) {
       }
     }
     if (job.row === SIZE) {
+      const height = i => MIN_HEIGHT + (data[i * 4] * 256 + data[i * 4 + 1]) / 65535 * HEIGHT_RANGE;
+      for (let z = 0; z < SIZE; z++) for (let x = 0; x < SIZE; x++) {
+        const i = z * SIZE + x;
+        const dx = (height(z * SIZE + Math.min(SIZE - 1, x + 1)) - height(z * SIZE + Math.max(0, x - 1))) / (CELL * (x === 0 || x === SIZE - 1 ? 1 : 2));
+        const dz = (height(Math.min(SIZE - 1, z + 1) * SIZE + x) - height(Math.max(0, z - 1) * SIZE + x)) / (CELL * (z === 0 || z === SIZE - 1 ? 1 : 2));
+        data[i * 4 + 2] = Math.round(Math.max(-2, Math.min(2, dx)) * 63 + 128);
+        data[i * 4 + 3] = Math.round(Math.max(-2, Math.min(2, dz)) * 63 + 128);
+      }
       // Publish data and its matching coordinates together. Never expose partial rows.
       const old = active; active = staging; staging = old;
       active.needsUpdate = true;
@@ -65,5 +88,18 @@ CB90.createWaterDepth = function (THREE) {
     }
     rows(ROWS_PER_UPDATE);
   }
-  return { uniforms, setWorld, update };
+  function sample(x, z) {
+    if (!uniforms.seabedReady.value) return { bottom: -24, dx: 0, dz: 0, coverage: 0 };
+    const u = (x - uniforms.seabedOrigin.value.x) / SPAN, v = (z - uniforms.seabedOrigin.value.y) / SPAN;
+    const edge = Math.max(0, Math.min(1, Math.min(u, v, 1 - u, 1 - v) / .065));
+    const gx = Math.max(0, Math.min(SIZE - 1.000001, u * (SIZE - 1)));
+    const gz = Math.max(0, Math.min(SIZE - 1.000001, v * (SIZE - 1)));
+    const ix = Math.floor(gx), iz = Math.floor(gz), fx = gx - ix, fz = gz - iz;
+    const data = active.image.data, i = (iz * SIZE + ix) * 4;
+    const channel = c => (data[i + c] * (1 - fx) + data[i + 4 + c] * fx) * (1 - fz)
+      + (data[i + SIZE * 4 + c] * (1 - fx) + data[i + (SIZE + 1) * 4 + c] * fx) * fz;
+    return { bottom: MIN_HEIGHT + (channel(0) * 256 + channel(1)) / 65535 * HEIGHT_RANGE,
+      dx: (channel(2) - 128) / 63, dz: (channel(3) - 128) / 63, coverage: edge * edge * (3 - 2 * edge) };
+  }
+  return { uniforms, glsl, setWorld, update, sample };
 };
