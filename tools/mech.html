@@ -1,0 +1,39 @@
+<!doctype html><html><head><meta charset="utf-8"></head><body><pre id="out">running</pre>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="../src/constants.js"></script><script src="../src/util.js"></script>
+<script src="../src/hull.js"></script><script src="../src/superstructure.js"></script>
+<script src="../src/waterjet.js"></script><script src="../src/equipment.js"></script>
+<script>
+const U = CB90.util, out = [];
+function bbox(obj){ const b=new THREE.Box3().setFromObject(obj); return {min:[b.min.x,b.min.y,b.min.z].map(v=>+v.toFixed(2)), max:[b.max.x,b.max.y,b.max.z].map(v=>+v.toFixed(2))}; }
+const mods = {};
+['buildHull','buildSuperstructure','buildEquipment'].forEach(fn=>{ const r=CB90[fn](THREE); mods[fn]=r; const s=new THREE.Scene(); s.add(r.group);
+  (r.articulations||[]).forEach(rec=>{
+    U.setArticulation(rec,0); r.group.updateMatrixWorld(true); const c=bbox(rec.pivot);
+    U.setArticulation(rec,1); r.group.updateMatrixWorld(true); const o=bbox(rec.pivot);
+    U.setArticulation(rec,0);
+    out.push({id:rec.id, axis:rec.axis, deg:[rec.closed,rec.open], pivot:[+rec.pivot.position.x.toFixed(2),+rec.pivot.position.y.toFixed(2),+rec.pivot.position.z.toFixed(2)],
+      closedBox:c, openBox:o,
+      dTop:+(o.max[1]-c.max[1]).toFixed(2), dFwd:+(o.max[0]-c.max[0]).toFixed(2), dOut:+(o.max[2]-c.max[2]).toFixed(2), dIn:+(o.min[2]-c.min[2]).toFixed(2)});
+  });
+});
+// waterjets
+const wj = CB90.buildWaterjets(THREE); const sc=new THREE.Scene(); sc.add(wj.group);
+function jetState(helm,bp,bs,thr){ wj.setHelm(helm); wj.setBucket('P',bp); wj.setBucket('S',bs); wj.setThrottle(thr);
+  for(let i=0;i<300;i++) wj.update(0.05,{throttle:thr,showJet:true}); wj.group.updateMatrixWorld(true);
+  const a=wj.getAngles?wj.getAngles():{}; const t=wj.getThrust?wj.getThrust():{};
+  const nozP=wj.parts.P.nozzle, nozS=wj.parts.S.nozzle;
+  const pw=new THREE.Vector3(), sw=new THREE.Vector3();
+  // direction of the nozzle axis in world space (local -X of the steering unit)
+  const dirP=new THREE.Vector3(-1,0,0).applyQuaternion(wj.parts.P.steerUnit.getWorldQuaternion(new THREE.Quaternion()));
+  const dirS=new THREE.Vector3(-1,0,0).applyQuaternion(wj.parts.S.steerUnit.getWorldQuaternion(new THREE.Quaternion()));
+  const bucketP=wj.parts.P.bucket.rotation.z*180/Math.PI, bucketS=wj.parts.S.bucket.rotation.z*180/Math.PI;
+  return {angles:a, thrust:t, nozzleDirP:[+dirP.x.toFixed(2),+dirP.y.toFixed(2),+dirP.z.toFixed(2)],
+    nozzleDirS:[+dirS.x.toFixed(2),+dirS.y.toFixed(2),+dirS.z.toFixed(2)],
+    bucketDegP:+bucketP.toFixed(1), bucketDegS:+bucketS.toFixed(1),
+    streamBox: bbox(wj.group)};
+}
+const jets = { ahead0: jetState(0,0,0,1), helmS30: jetState(30,0,0,1), helmP30: jetState(-30,0,0,1),
+  neutral: jetState(0,0.7,0.7,0.6), astern: jetState(0,1,1,0.8), split: jetState(0,1,0,0.8) };
+document.getElementById('out').textContent = JSON.stringify({articulations:out, jets:jets}, null, 1);
+</script></body></html>

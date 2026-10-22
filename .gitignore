@@ -1,0 +1,29 @@
+# macOS metadata
+.DS_Store
+._*
+
+# Local caches
+.cache/
+__pycache__/
+*.pyc
+
+# Local research, old exports and private working material
+/Referens/
+/backups/
+/tmp/
+/shots/
+/.claude/
+/docs/research/skargardskortet-reference.html
+
+# Credentials and machine-specific configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+*service-account*.json
+node_modules/
+*.log

@@ -1,0 +1,12 @@
+const {chromium}=require('playwright'),fs=require('fs'),path=require('path');
+(async()=>{const b=await chromium.launch({channel:'chrome',headless:true,args:['--use-angle=swiftshader','--enable-unsafe-swiftshader']});try{
+ const p=await b.newPage({viewport:{width:1000,height:700}}),errors=[];p.on('pageerror',e=>errors.push(e.message));p.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
+ await p.setContent('<body style="margin:0">'+['vendor/three.min','constants','archipelago','sea-state','weather','wake','water-depth','hull-waves','hull-wave-surface','water','environment'].map(f=>'<script>'+fs.readFileSync('src/'+f+'.js','utf8')+'</script>').join(''));
+ await p.evaluate(()=>{const scene=new THREE.Scene();scene.background=new THREE.Color(0x9ab6c4);scene.fog=new THREE.Fog(0x9ab6c4,700,2000);const renderer=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});renderer.setSize(1000,700);renderer.outputEncoding=THREE.sRGBEncoding;renderer.toneMapping=THREE.ACESFilmicToneMapping;document.body.appendChild(renderer.domElement);scene.add(new THREE.HemisphereLight(0xe0ecf5,0x5d6845,.9));const sun=new THREE.DirectionalLight(0xffedce,1.2);sun.position.set(-40,70,50);scene.add(sun);const water=CB90.buildWater(THREE);scene.add(water.group);const camera=new THREE.PerspectiveCamera(50,1000/700,1,2500);window.qa={scene,renderer,water,camera};});
+ for(const [name,x0] of [['inner',-3500],['outer',3500]]){
+ const result=await p.evaluate(({x0})=>{const q=qa;if(q.env)q.scene.remove(q.env.group);const w=CB90.Archipelago.create(90848);let peak={x:x0,z:0,h:0};for(let x=x0-300;x<x0+300;x+=40)for(let z=-2200;z<2200;z+=40){const h=w.height(x,z);if(h>peak.h)peak={x,z,h};}w.start={x:peak.x,z:peak.z};q.env=CB90.buildEnvironment(THREE,w);q.scene.add(q.env.group);for(let i=0;i<120;i++)q.env.update(.016,{nav:w.start},0);q.water.update(0,{nav:w.start});q.camera.position.set(peak.x+330,100,peak.z+370);q.camera.lookAt(peak.x,5,peak.z);q.scene.updateMatrixWorld(true);q.renderer.render(q.scene,q.camera);return {peak,stats:q.env.stats()};},{x0});
+ if(name==='inner' && Object.values(result.stats.species).some(n=>n===0)) throw Error('Inner islands must contain pine, spruce and birch');
+ await p.locator('canvas').screenshot({path:path.resolve('shots/region-'+name+'.png')});console.log(name,JSON.stringify(result));
+ }
+ if(errors.length)throw Error(errors.join('\n'));console.log('PASS rendered inner forest and outer skerries without WebGL errors');
+ }finally{await b.close();}})().catch(e=>{console.error(e);process.exitCode=1;});
