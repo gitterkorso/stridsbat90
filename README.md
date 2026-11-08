@@ -1,5 +1,9 @@
 # CB90 H — Svenska skärgården
 
+**[▶ Starta i webbläsaren](https://stridsbat90-skargarden.nick474.chatgpt.site/play/?mode=pilot)** — kör direkt utan installation eller inloggning.
+
+[Projektets hemsida och kontrollguide](https://stridsbat90-skargarden.nick474.chatgpt.site)
+
 Kör Stridsbåt 90 H genom en procedurellt genererad svensk skärgård, gå ombord och utforska båten i 3D. Modellen har öppningsbara luckor, gångbar interiör, separat styrning av de två vattenjetarna och valbar tid och väder. Skrovet tränger undan vatten och lämnar svallvågor som fortsätter breda ut sig efter att båten har passerat.
 
 All simulering och rendering körs lokalt, i Windows-programmet eller webbläsaren. Inga API-nycklar, konton eller separat backend behövs. Projektet är en visuell rekonstruktion med förenklad fysik, inte en certifierad simulator eller konstruktionsmodell.
