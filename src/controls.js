@@ -13,7 +13,7 @@
 window.CB90 = window.CB90 || {};
 (function () {
   const VIEWS = {
-    overview:   { position: [21.3, 6.2, 15.2],      target: [7.5, 0.8, 0] },
+    overview:   { position: [18.6, 6.1, 13.7],     target: [7.5, 0.8, 0] },
     bow:        { position: [21, 3.2, 5.5],   target: [13.6, 1.2, 0] },
     stern:      { position: [-7.5, 2.4, 4.6], target: [0.5, 0.5, 0] },
     top:        { position: [7.5, 28, 0.01],  target: [7.5, 0.6, 0] },

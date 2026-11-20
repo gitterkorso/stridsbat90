@@ -8,16 +8,38 @@ CB90.weatherUniforms=function(THREE){return CB90._weatherUniforms||(CB90._weathe
 CB90.skyGLSL=`uniform float daylight,cloudCover,atmosTime;uniform vec3 sunDirection,skyHorizon,skyZenith;
  float skyHash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
  float skyNoise(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.0-2.0*f);return mix(mix(skyHash(i),skyHash(i+vec2(1,0)),f.x),mix(skyHash(i+vec2(0,1)),skyHash(i+vec2(1,1)),f.x),f.y);}
+ float cloudField(vec2 p){
+   // Rotated octaves avoid square-looking cloud banks at low sun angles.
+   mat2 spin=mat2(.80,-.60,.60,.80);
+   float n=skyNoise(p)*.53;p=spin*p*2.07+13.7;
+   n+=skyNoise(p)*.28;p=spin*p*2.03+7.1;
+   return n+skyNoise(p)*.13+skyNoise(spin*p*2.01)*.06;
+ }
  vec3 skyRadiance(vec3 d){
- float h=max(d.y,0.0);vec3 color=mix(skyHorizon,skyZenith,pow(h,.44));
- float sun=max(dot(d,sunDirection),0.0);
- color+=vec3(1.0,.60,.25)*pow(sun,12.0)*daylight*(1.0-cloudCover)*.20;
- color+=vec3(1.0,.85,.6)*pow(sun,2200.0)*daylight*(1.0-cloudCover)*3.0;
- vec2 cp=d.xz/max(.16,h)*1.7+vec2(atmosTime*.008,0.0);
- float n=skyNoise(cp)*.57+skyNoise(cp*2.03)*.28+skyNoise(cp*4.1)*.15;
- float clouds=smoothstep(.75-cloudCover*.65,.94-cloudCover*.65,n)*smoothstep(.0,.15,h);
- vec3 cloudColor=mix(vec3(.012,.018,.027),mix(vec3(.70,.73,.74),vec3(.20,.24,.28),cloudCover),daylight);
+ float h=max(d.y,0.0),sun=max(dot(d,sunDirection),0.0);
+ float lowSun=1.0-smoothstep(.06,.50,sunDirection.y);
+ vec3 color=mix(skyHorizon,skyZenith,pow(h,.48));
+ vec3 sunTint=mix(vec3(1.0,.92,.76),vec3(1.0,.48,.20),lowSun);
+ // Broad aerosol scattering is strongest towards the sun, without a white horizon stripe.
+ color+=sunTint*pow(sun,9.0)*daylight*(1.0-cloudCover)*(.075+lowSun*.18);
+ color+=sunTint*pow(sun,2400.0)*daylight*(1.0-cloudCover)*4.2;
+ vec2 cp=d.xz/max(.035,h)*1.35+vec2(atmosTime*.006,atmosTime*.0017);
+ float n=cloudField(cp);
+ float threshold=mix(.64,.22,cloudCover);
+ float density=smoothstep(threshold,threshold+.22,n);
+ float clouds=density*smoothstep(.035,.18,h);
+ // Density and the sun-facing density difference make rounded, softly lit cloud volumes.
+ float lit=skyNoise(cp+sunDirection.xz*.42)*.65+skyNoise(cp*2.07+sunDirection.xz*.65+13.7)*.35;
+ float edge=clamp((n-lit)*2.8+.46,0.0,1.0);
+ vec3 cloudShade=mix(vec3(.24,.31,.38),vec3(.14,.18,.23),cloudCover);
+ vec3 cloudLight=mix(vec3(.86,.90,.91),vec3(1.0,.58,.31),lowSun*.67);
+ vec3 cloudColor=mix(cloudShade,cloudLight,edge*(1.0-cloudCover*.56));
+ cloudColor+=sunTint*pow(sun,24.0)*(1.0-density)*.32*(1.0-cloudCover);
+ cloudColor=mix(vec3(.009,.014,.024),cloudColor,daylight);
  color=mix(color,cloudColor,clouds);
+ // High, thin ice clouds give clear skies scale; they fade as the low cloud layer closes.
+ float cirrus=pow(skyNoise(cp*vec2(.45,3.8)+vec2(19.0,atmosTime*.002)),3.0);
+ color=mix(color,mix(vec3(.018,.024,.036),vec3(.65,.72,.78),daylight),cirrus*.12*(1.0-cloudCover)*smoothstep(.12,.50,h));
  float stars=pow(skyHash(floor(d.xz/max(.15,h)*480.0)),150.0)*smoothstep(.18,.45,h);
  color+=vec3(.6,.7,.9)*stars*(1.0-daylight)*(1.0-cloudCover)*.7;
  vec3 moonDir=normalize(vec3(.35,.55,-.76));float moon=smoothstep(.99965,.99983,dot(d,moonDir));
@@ -58,10 +80,12 @@ CB90.createWeather=function(THREE,state,scene,camera,sun,hemi,fill){
  u.sunDirection.value.set(-Math.cos(angle),elevation,.4).normalize();
  const day=smooth(-.12,.22,elevation),twilight=(1-smooth(.02,.30,Math.abs(elevation)))*(1-current.cloud*.7);
  u.daylight.value=day;u.cloudCover.value=current.cloud;u.atmosTime.value=t;u.fogDensity.value=current.fog;
- u.skyHorizon.value.setRGB(.006+day*(.44-current.cloud*.15)+twilight*.25,.010+day*(.60-current.cloud*.25)+twilight*.055,.021+day*(.69-current.cloud*.28));
- u.skyZenith.value.setRGB(.002+day*(.065+current.cloud*.09),.005+day*(.22-current.cloud*.04),.014+day*(.42-current.cloud*.15));
- sun.intensity=1.45*day*(1-current.cloud*.85);sun.color.setRGB(1,1-twilight*.35,1-twilight*.65);
- hemi.intensity=.045+day*(.70-current.cloud*.24);fill.intensity=.015+day*.18;
+ u.skyHorizon.value.setRGB(.006+day*(.40-current.cloud*.13)+twilight*.30,.010+day*(.57-current.cloud*.23)+twilight*.062,.021+day*(.68-current.cloud*.26));
+ u.skyZenith.value.setRGB(.002+day*(.050+current.cloud*.10),.005+day*(.18-current.cloud*.015),.014+day*(.36-current.cloud*.10));
+ const warm=(1-smooth(.08,.65,elevation))*(1-current.cloud*.62);
+ sun.intensity=1.58*day*(1-current.cloud*.85);sun.color.setRGB(1,1-warm*.22,1-warm*.43);
+ hemi.intensity=.045+day*(.58-current.cloud*.15);fill.intensity=.015+day*.15;
+ hemi.color.copy(u.skyHorizon.value).lerp(u.skyZenith.value,.24);hemi.groundColor.setRGB(.23+day*.10,.25+day*.07,.23+day*.04);
  scene.fog.color.copy(u.skyHorizon.value);scene.fog.density=current.fog;
  scene.background.copy(u.skyHorizon.value);CB90.Sea.strength.value=current.waves;
  ru.rainAmount.value=current.rain;ru.eye.value.copy(camera.position);ru.inside.value=state.mode==='exterior'?0:1;rain.visible=current.rain>.005;

@@ -8,10 +8,11 @@ window.CB90 = window.CB90 || {};
   window.addEventListener('error',e=>error(e.error||e.message));
   window.addEventListener('unhandledrejection',e=>error(e.reason));
   if(typeof THREE==='undefined'){error('3D-biblioteket saknas. Bygg projektet igen.');return;}
-  const state={hatches:{},mode:'exterior',view:'overview',engineP:0,engineS:0,enginesOn:true,helm:0,throttle:0,bucketP:.7,bucketS:.7,linkBuckets:true,foredeckGun:false,radarOn:true,radarRpm:24,cutaway:false,showJet:false,showWater:true,shadows:true,paused:false,sound:false,panelOpen:true,helpOpen:false,autoRotate:false,quality:'high',interaction:'',walkZone:'Styrhytt',seed:0,chart:null,plotterRange:1,plotterOrientation:'north',plotterNear:true,notice:''};
+  const state={hatches:{},mode:'exterior',view:'overview',engineP:0,engineS:0,enginesOn:true,helm:0,throttle:0,bucketP:.7,bucketS:.7,linkBuckets:true,foredeckGun:false,radarOn:true,radarRpm:24,cutaway:false,showJet:false,showWater:true,shadows:true,paused:false,sound:false,panelOpen:false,helpOpen:false,autoRotate:false,quality:'high',interaction:'',walkZone:'Styrhytt',seed:0,chart:null,plotterRange:1,plotterOrientation:'north',plotterNear:true,notice:''};
   let renderer;
   try{renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance',preserveDrawingBuffer:true});}catch(e){error(e);return;}
-  renderer.setPixelRatio(Math.min(devicePixelRatio||1,1.6));renderer.outputEncoding=THREE.sRGBEncoding;
+  const highPixelRatio=()=>Math.min(devicePixelRatio||1,innerWidth<760?1.5:2);
+  renderer.setPixelRatio(highPixelRatio());renderer.outputEncoding=THREE.sRGBEncoding;
   renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=.94;
   renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
   viewport.appendChild(renderer.domElement);renderer.domElement.tabIndex=0;renderer.domElement.setAttribute('aria-label','Interaktiv 3D-vy av Stridsbåt 90 H');
@@ -20,14 +21,9 @@ window.CB90 = window.CB90 || {};
   const boat=new THREE.Group();boat.name='CB90 H · 845';scene.add(boat);
   const hemi=new THREE.HemisphereLight(0xd6e7ef,0x726b51,.70);scene.add(hemi);
   const sun=new THREE.DirectionalLight(0xffebc6,1.35);sun.position.set(-38,72,65);sun.castShadow=true;
-  sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-16,right:16,top:16,bottom:-16,near:1,far:160});sun.shadow.camera.updateProjectionMatrix();sun.shadow.bias=-.0002;sun.shadow.normalBias=.025;scene.add(sun,sun.target);
+  const shadowSize=Math.min(renderer.capabilities.maxTextureSize,innerWidth<1000?2048:4096);
+  sun.shadow.mapSize.set(shadowSize,shadowSize);Object.assign(sun.shadow.camera,{left:-13,right:13,top:13,bottom:-13,near:1,far:160});sun.shadow.camera.updateProjectionMatrix();sun.shadow.bias=-.00012;sun.shadow.normalBias=.012;sun.shadow.radius=2;scene.add(sun,sun.target);
   const fill=new THREE.DirectionalLight(0xb9d9ed,.22);fill.position.set(20,5,-20);scene.add(fill);
-  // Soft studio-like sky reflection on glazing and exposed metal; the visible sky remains part of the archipelago.
-  const envCanvas=document.createElement('canvas');envCanvas.width=512;envCanvas.height=256;
-  const ec=envCanvas.getContext('2d'), grad=ec.createLinearGradient(0,0,0,256);
-  grad.addColorStop(0,'#6c9bbd');grad.addColorStop(.45,'#cbdadc');grad.addColorStop(.53,'#f5e7cb');grad.addColorStop(.58,'#526b6c');grad.addColorStop(1,'#263d3a');ec.fillStyle=grad;ec.fillRect(0,0,512,256);
-  const envTex=new THREE.CanvasTexture(envCanvas);envTex.mapping=THREE.EquirectangularReflectionMapping;envTex.encoding=THREE.sRGBEncoding;
-  const pmrem=new THREE.PMREMGenerator(renderer), envTarget=pmrem.fromEquirectangular(envTex);scene.environment=envTarget.texture;pmrem.dispose();envTex.dispose();
   // Procedural archipelago: one seed (URL ?seed=N) drives the terrain, the handling model and the chart plotters.
   const A=CB90.Archipelago;let world=null;
   function readSeed(){const raw=q.get('seed');const n=raw==null||raw===''?NaN:Number(raw);return Number.isFinite(n)&&n>=0?Math.floor(n):A.DEFAULT_SEED;}
@@ -44,11 +40,15 @@ window.CB90 = window.CB90 || {};
   const treatedMaterials=new Set();
   boat.traverse(o=>{if(!o.isMesh)return;(Array.isArray(o.material)?o.material:[o.material]).forEach(m=>{
     if(!m||treatedMaterials.has(m))return;treatedMaterials.add(m);
-    if(m.isMeshStandardMaterial){m.color.convertSRGBToLinear();m.envMapIntensity=.65;}
+    if(m.isMeshStandardMaterial){
+      m.color.convertSRGBToLinear();m.envMapIntensity=m.userData.envIntensity || (m.name==='marine-glazing'?1.2:.8);
+      for(const key of ['map','bumpMap','normalMap','roughnessMap'])if(m[key])m[key].anisotropy=Math.min(8,renderer.capabilities.getMaxAnisotropy());
+    }
     if(m.name==='camo'){const painted=U.camoMaterial();m.onBeforeCompile=painted.onBeforeCompile;m.customProgramCacheKey=painted.customProgramCacheKey;}
   });});
   const controls=CB90.createControls(THREE,camera,renderer.domElement);controls.setFrame(boat);modules.controls=controls;
   const weather=CB90.createWeather(THREE,state,scene,camera,sun,hemi,fill);modules.weather=weather;
+  const lighting=CB90.createSkyLighting(THREE,renderer,scene);modules.lighting=lighting;
   const navigation=CB90.createNavigation(state,terrainOf(environment),world?world.start:null);
   const motion=CB90.createBoatMotion(CB90.Sea.height);modules.motion=motion;
   let plotter=null;
@@ -158,7 +158,7 @@ window.CB90 = window.CB90 || {};
     setPanel(v){state.panelOpen=!!v;resize();},setHelp(v){state.helpOpen=!!v;keys.clear();},
     setPaused(v){state.paused=!!v;keys.clear();},
     setSound(v){state.sound=!!v;if(v)initAudio();},
-    setQuality(v){state.quality=v;renderer.setPixelRatio(v==='high'?Math.min(devicePixelRatio||1,1.6):1);renderer.shadowMap.enabled=v==='high';resize(true);},
+    setQuality(v){state.quality=v;renderer.setPixelRatio(v==='high'?highPixelRatio():1);renderer.shadowMap.enabled=v==='high';resize(true);},
     moveKey(k,on){if(on){clearTimeout(keyTimers.get(k));pressedAt.set(k,performance.now());keys.add(k);}else releaseKey(k);},
     lockMouse(){renderer.domElement.focus();try{const promise=renderer.domElement.requestPointerLock();if(promise&&promise.catch)promise.catch(()=>{state.interaction='Dra med musen för att se dig omkring';});}catch(e){state.interaction='Dra med musen för att se dig omkring';}},
     interact(){if(currentHover)actOnHit(currentHover);else if(state.mode==='walk'&&walk.x>8.6&&walk.x<10.5)setMode('pilot');},
@@ -169,6 +169,9 @@ window.CB90 = window.CB90 || {};
   ui=CB90.createUI($('panel'),state,actions,artRecords,$('hud'));
   function resize(force){const w=viewport.clientWidth,h=viewport.clientHeight;if(!w||!h)return;
     if(force||renderer.domElement.width!==Math.floor(w*renderer.getPixelRatio())||camera.aspect!==w/h){renderer.setSize(w,h,false);camera.aspect=w/h;}
+    // Keep the complete vessel in a portrait viewport; walking/pilot retain
+    // their natural field of view. Orbit zoom still operates normally.
+    camera.zoom=state.mode==='exterior'?Math.min(1,(w/h)/1.2):1;
     if(state.mode==='exterior'&&state.panelOpen&&w>900)camera.setViewOffset(w,h,128,0,w,h);else camera.clearViewOffset();camera.updateProjectionMatrix();
   }
   window.addEventListener('resize',()=>resize(true));
@@ -289,11 +292,13 @@ window.CB90 = window.CB90 || {};
   function updateAudio(){if(!audioCtx)return;const power=(Math.abs(state.engineP)+Math.abs(state.engineS))*.5;audioGain.gain.setTargetAtTime(state.sound&&state.enginesOn&&!state.paused?.022+power*.026:0,audioCtx.currentTime,.2);audioOsc.forEach((o,i)=>o.frequency.setTargetAtTime((i===2?2:1)*(29+power*55+i*1.4),audioCtx.currentTime,.25));}
   const debug=$('status'),shot=q.get('shot')==='1';
   function frame(now){
-    requestAnimationFrame(frame);const dt=Math.min((now-lastTime)/1000,.1);lastTime=now;if(document.hidden)return;
+    // The first RAF timestamp can predate a long synchronous scene build.
+    // Negative time used to flash a false grounding alert and rewind the clock.
+    requestAnimationFrame(frame);const dt=Math.max(0,Math.min((now-lastTime)/1000,.1));lastTime=now;if(document.hidden)return;
     try{
       if(!state.paused)elapsed+=dt;updateInput(dt);navigation.step(dt);
       weather.update(dt,elapsed);
-      treatedMaterials.forEach(m=>{if(m.isMeshStandardMaterial)m.envMapIntensity=.65*(.04+.96*weather.uniforms.daylight.value);});
+      lighting.update();
       motion.update(state.paused?0:dt,elapsed,state);motion.apply(boat,state.nav);
       // Two signed physical levers drive each jet's reversing bucket separately.
       state.throttle=state.enginesOn?Math.max(Math.abs(state.engineP),Math.abs(state.engineS)):0;

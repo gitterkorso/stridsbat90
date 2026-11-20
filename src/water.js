@@ -150,7 +150,8 @@ CB90.buildWater = function (THREE) {
         vec3 transmission=exp(-vec3(0.54,0.25,0.19)*waterDepth/max(ndv,0.28));
         vec3 bottomColor=vec3(0.13,0.17,0.105)*(0.86+0.14*noise(p*0.34));
         vec3 body=deep*(1.0-transmission)+bottomColor*transmission;
-        vec3 reflectedColor=skyRadiance(R);
+        vec3 reflectedColor=vec3(0.0);
+        float reflectionCoverage=0.0;
         // Optional linear-color planar pass; the analytic sea remains the fallback.
         if(reflectionEnabled>0.5){
           vec3 reflectedPoint=vec3(p.x,-0.015,p.y)+vec3(N.x,0.0,N.z)*mix(0.8,2.8,1.0-ndv);
@@ -167,10 +168,13 @@ CB90.buildWater = function (THREE) {
               reflected+=texture2D(reflectionMap,uv-vec2(0.0,blur.y)).rgb*0.15;
               float border=smoothstep(0.0,0.018,uv.x)*smoothstep(0.0,0.018,uv.y)
                           *smoothstep(0.0,0.018,1.0-uv.x)*smoothstep(0.0,0.018,1.0-uv.y);
-              reflectedColor=mix(reflectedColor,reflected,border);
+              reflectedColor=reflected;reflectionCoverage=border;
             }
           }
         }
+        // The planar target already contains the detailed sky. Evaluate that sky only
+        // for the fallback or the edge of the reflection, rather than twice per pixel.
+        if(reflectionCoverage<.999)reflectedColor=mix(skyRadiance(R),reflectedColor,reflectionCoverage);
         vec3 color=mix(body*mix(0.025,1.0,daylight),reflectedColor,fresnel);
         vec3 H=normalize(V+sunDirection);
         float ndh=max(dot(N,H),0.0),ndl=max(dot(N,sunDirection),0.0);
@@ -192,10 +196,16 @@ CB90.buildWater = function (THREE) {
         float bubbleNoise=noise(foamCoord*6.3-wind*time*0.12)*0.55+noise(p*10.7+time*0.09)*0.45;
         float bubbles=mix(0.65,smoothstep(0.22,0.76,bubbleNoise),fine);
         float crestHeight=(height-hullHeight)/max(seaStrength,0.1);
-        float capWeather=smoothstep(0.45,2.1,seaStrength);
-        float whitecaps=smoothstep(0.25,0.6,seaStrength)*smoothstep(0.12,0.25,crestHeight);
-        whitecaps*=smoothstep(mix(0.60,0.40,capWeather),mix(0.76,0.67,capWeather),foamNoise);
-        whitecaps*=0.65+0.35*smoothstep(0.03,0.16,length(waveSlope));
+        // Ambient breaking starts with stronger wind, rather than whitening every
+        // crest in the calm 4 m/s preset. Hull, jet and shoreline foam stay independent.
+        float capWeather=smoothstep(4.3,13.0,length(windVelocity))*smoothstep(0.70,2.2,seaStrength);
+        float whitecaps=0.0;
+        if(capWeather>0.001){
+          float streaks=noise(foamCoord*vec2(0.85,5.4)-vec2(time*0.13,time*0.31));
+          float breaking=smoothstep(mix(0.67,0.51,capWeather),mix(0.86,0.77,capWeather),streaks*0.65+foamNoise*0.35);
+          whitecaps=capWeather*breaking*smoothstep(mix(0.17,0.11,capWeather),0.27,crestHeight);
+          whitecaps*=smoothstep(0.045,0.18,length(waveSlope));
+        }
         float crestFilter=min(0.16,footprint*length(hullSlope)*0.5);
         float wakeCrest=smoothstep(0.06-crestFilter,0.32+crestFilter,hullHeight)*smoothstep(0.04,0.26,length(hullSlope));
         wakeCrest*=smoothstep(0.36,0.72,foamNoise);

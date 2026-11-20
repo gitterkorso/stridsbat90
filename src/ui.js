@@ -1,7 +1,8 @@
 // Swedish, scene-first interface. UI is a view of the same state that drives the 3D controls.
 window.CB90=window.CB90||{};
 CB90.createUI=function(panel,state,actions,articulations,hud){
-  const $=id=>document.getElementById(id),sync=[];let panelTab='details';
+  const $=id=>document.getElementById(id),sync=[];let panelTab='details',panelBeforeFocus=false;
+  state.focusView=false;
   function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e;}
   function button(text,fn,cls='small-btn'){const e=el('button',cls,text);e.type='button';e.addEventListener('click',()=>{fn();refresh();});return e;}
   function label(text,right){const e=el('div','section-label');e.append(el('span','',text));if(right)e.append(el('span','',right));return e;}
@@ -11,11 +12,17 @@ CB90.createUI=function(panel,state,actions,articulations,hud){
   const helm=n=>Math.abs(n)<.5?'MIDSKIPS':(n<0?'BB ':'SB ')+Math.round(Math.abs(n))+'°';
   function pair(...buttons){const e=el('div','pair');e.append(...buttons);return e;}
   panel.innerHTML='';
-  const header=el('div','panel-head'),title=el('div');title.append(el('div','eyebrow','DIN BÅT / 845'),el('h2','', 'Närmare detaljerna'));header.append(title,button('×',()=>actions.setPanel(false),'panel-close'));panel.append(header);
-  const tabs=el('div','panel-tabs');const tabNames={details:'Luckor & delar',helm:'Manövrering',views:'Kameror',weather:'Väder'};const bodies={};Object.entries(tabNames).forEach(([key,name])=>{const b=button(name,()=>{panelTab=key;},'');b.dataset.tab=key;tabs.append(b);});panel.append(tabs);
-  Object.keys(tabNames).forEach(key=>{bodies[key]=el('div','tab-body');panel.append(bodies[key]);});
+  const header=el('div','panel-head'),title=el('div');title.append(el('div','eyebrow','CB90 H / INDIVID 845'),el('h2','', 'Utforska båten'));const closePanel=button('×',()=>actions.setPanel(false),'panel-close');closePanel.setAttribute('aria-label','Stäng kontrollpanelen');header.append(title,closePanel);panel.append(header);
+  const tabs=el('div','panel-tabs');tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','Båtens reglage');const tabNames={details:'Luckor & delar',helm:'Manövrering',views:'Kameror',weather:'Väder'};const bodies={};Object.entries(tabNames).forEach(([key,name])=>{const b=button(name,()=>{panelTab=key;},'');b.dataset.tab=key;b.id='panel-tab-'+key;b.setAttribute('role','tab');b.setAttribute('aria-controls','panel-body-'+key);tabs.append(b);});panel.append(tabs);
+  Object.keys(tabNames).forEach(key=>{const body=bodies[key]=el('div','tab-body');body.id='panel-body-'+key;body.setAttribute('role','tabpanel');body.setAttribute('aria-labelledby','panel-tab-'+key);panel.append(body);});
+  tabs.addEventListener('keydown',e=>{const items=[...tabs.querySelectorAll('button')],index=items.indexOf(document.activeElement);if(index<0)return;let next=index;if(e.key==='ArrowRight')next=(index+1)%items.length;else if(e.key==='ArrowLeft')next=(index+items.length-1)%items.length;else if(e.key==='Home')next=0;else if(e.key==='End')next=items.length-1;else return;e.preventDefault();e.stopPropagation();panelTab=items[next].dataset.tab;refresh();items[next].focus();});
   const weatherPanel=bodies.weather;
   const clock=h=>{const m=Math.floor(h*60)%1440;return String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0');};
+  const scenePresets=[{id:'day',name:'Dagsljus',hour:13,weather:'clear',detail:'13:00 · klart'},{id:'evening',name:'Kvällsljus',hour:16.75,weather:'clear',detail:'16:45 · varmt ljus'},{id:'mist',name:'Morgondis',hour:9,weather:'fog',detail:'09:00 · dimma'},{id:'night',name:'Natt',hour:0,weather:'clear',detail:'00:00 · stjärnhimmel'}];
+  function sceneButton(preset,compact){const b=button(preset.name,()=>{actions.setDayCycle(false);actions.setHour(preset.hour);actions.setWeather(preset.weather);},'');b.dataset.scene=preset.id;b.setAttribute('aria-label',preset.name+', '+preset.detail);if(!compact)b.append(el('small','',preset.detail));sync.push(()=>{const selected=!state.dayCycle&&state.weather===preset.weather&&Math.abs(state.hour-preset.hour)<.025;b.classList.toggle('active',selected);b.setAttribute('aria-pressed',String(selected));});return b;}
+  scenePresets.slice(0,3).forEach(preset=>$('scenePresets').append(sceneButton(preset,true)));
+  weatherPanel.append(label('LJUS & STÄMNING'));
+  const scenes=el('div','camera-list scene-cards');scenePresets.forEach(preset=>scenes.append(sceneButton(preset,false)));weatherPanel.append(scenes,el('p','quiet-note','Välj ett ljusläge för att stanna tiden. Dygnscykeln kan slås på igen nedan.'),el('div','divider'));
   weatherPanel.append(label('TID PÅ DYGNET'));
   weatherPanel.append(slider('Klockslag',0,23.99,.05,()=>state.hour,actions.setHour,clock,'dayHour',['MIDNATT','12:00','MIDNATT']));
   weatherPanel.append(toggle('Automatisk dygnscykel',()=>state.dayCycle,actions.setDayCycle,'dayCycle'));
@@ -79,17 +86,24 @@ CB90.createUI=function(panel,state,actions,articulations,hud){
   const bind=(id,fn)=>$(id).addEventListener('click',()=>{fn();refresh();});
   bind('driveBtn',()=>actions.setMode(state.mode==='pilot'?'walk':'pilot'));
   bind('panelToggle',()=>actions.setPanel(!state.panelOpen));bind('photoBtn',actions.photo);
+  function setFocus(on){on=!!on&&state.mode==='exterior';if(on===state.focusView)return;if(on){panelBeforeFocus=state.panelOpen;actions.setPanel(false);}else actions.setPanel(state.mode==='exterior'?panelBeforeFocus:false);state.focusView=on;refresh();if(on)$('focusExit').focus();else if(state.mode==='exterior')$('focusBtn').focus();}
+  bind('focusBtn',()=>setFocus(true));bind('focusExit',()=>setFocus(false));
+  window.addEventListener('keydown',e=>{if(e.metaKey||e.ctrlKey||e.altKey||e.repeat||/INPUT|TEXTAREA|SELECT/.test(e.target.tagName)||e.target.isContentEditable)return;if(e.key==='Escape'&&state.focusView){setFocus(false);return;}if(e.key.toLowerCase()==='v'&&state.mode==='exterior'&&!state.helpOpen){e.preventDefault();setFocus(!state.focusView);}});
   bind('pauseBtn',()=>actions.setPaused(!state.paused));bind('soundBtn',()=>actions.setSound(!state.sound));
   bind('helpBtn',()=>actions.setHelp(true));bind('closeHelp',()=>actions.setHelp(false));
   bind('mouseLock',()=>{if(document.pointerLockElement)document.exitPointerLock();else actions.lockMouse();});
   $('helpModal').addEventListener('click',e=>{if(e.target===$('helpModal')){actions.setHelp(false);refresh();}});
   let oldMode='',oldPanel,helpWasOpen=false;
   function refresh(){
+    if(state.focusView&&(state.mode!=='exterior'||state.helpOpen)){state.focusView=false;if(state.helpOpen)actions.setPanel(panelBeforeFocus);}
+    if(state.focusView&&state.panelOpen)actions.setPanel(false);
     sync.forEach(fn=>fn());
     document.querySelectorAll('.mode-nav button').forEach(b=>{b.classList.toggle('active',b.dataset.mode===state.mode);b.setAttribute('aria-pressed',String(b.dataset.mode===state.mode));});
-    tabs.querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.tab===panelTab));Object.entries(bodies).forEach(([k,b])=>b.hidden=k!==panelTab);
+    tabs.querySelectorAll('button').forEach(b=>{const active=b.dataset.tab===panelTab;b.classList.toggle('active',active);b.setAttribute('aria-selected',String(active));b.tabIndex=active?0:-1;});Object.entries(bodies).forEach(([k,b])=>b.hidden=k!==panelTab);
     cameras.querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.view===state.view));
     $('app').classList.toggle('panel-hidden',!state.panelOpen);$('panelToggle').setAttribute('aria-expanded',String(state.panelOpen));
+    panel.inert=!state.panelOpen;panel.setAttribute('aria-hidden',String(!state.panelOpen));
+    $('app').classList.toggle('focus-view',state.focusView);$('focusBtn').setAttribute('aria-pressed',String(state.focusView));
     if(oldPanel!==state.panelOpen){oldPanel=state.panelOpen;actions.setPanel(state.panelOpen);}
     $('pauseBtn').textContent=state.paused?'▶':'Ⅱ';$('pauseBtn').setAttribute('aria-label',state.paused?'Fortsätt simuleringen':'Pausa simuleringen');$('pauseBtn').classList.toggle('active',state.paused);
     $('soundBtn').classList.toggle('active',state.sound);$('soundBtn').setAttribute('aria-label',state.sound?'Stäng av motorljud':'Slå på motorljud');

@@ -18,15 +18,26 @@ CB90.buildSuperstructure = function (THREE) {
   const camoMat = U.cloneCamoMaterial(U.camoMaterial()); camoMat.vertexColors = true; camoMat.name = 'camo-wheelhouse';
   const insideShellMat = new THREE.MeshStandardMaterial({ color: 0xb9c3bd, roughness: 0.72, metalness: 0.10 });
   // The glazing needs to remain readable from a seated eye as well as reflecting the sky outside.
-  const glass = new THREE.MeshPhysicalMaterial({ color: 0x86a4a0, roughness: 0.09, metalness: 0.04,
-    transparent: true, opacity: 0.27, depthWrite: false, side: THREE.DoubleSide, clearcoat: 1 });
-  const frame = U.mat(0x1c1e20, { roughness: 0.6, metalness: 0.3, name: 'frame' });
+  const glass = new THREE.MeshPhysicalMaterial({ color: 0xa4bbb4, roughness: 0.075, metalness: 0,
+    transparent: true, opacity: 0.20, depthWrite: false, side: THREE.DoubleSide,
+    clearcoat: 1, clearcoatRoughness: .055, reflectivity: .5, envMapIntensity: 1.2 });
+  glass.name='marine-glazing';glass.userData.envIntensity=1.2;
+  // Keep the seated view clear while giving oblique panes the stronger sky
+  // reflection of laminated marine glass. No expensive transmission buffer.
+  glass.onBeforeCompile=shader=>{
+    shader.fragmentShader=shader.fragmentShader.replace('#include <normal_fragment_maps>',`#include <normal_fragment_maps>
+      float glassFresnel=pow(1.0-abs(dot(normal,normalize(vViewPosition))),4.0);
+      diffuseColor.a=mix(opacity,.76,glassFresnel);
+    `);
+  };
+  glass.customProgramCacheKey=()=> 'marine-glass-fresnel-v1';
+  const frame = U.surface(U.mat(0x1c1e20, { roughness: 0.67, metalness: 0.08, name: 'frame' }), 'rubber');
   const darkHole = U.mat(0x101214, { roughness: 1 });
   const darkLining = U.mat(0x101214, { roughness: 1, side: THREE.DoubleSide, name: 'lining' });
   const lidMat = U.mat(C.DECK_LIGHT, { roughness: 0.8 });
   const floorMat = U.mat(C.DECK, { roughness: 0.95 });
-  const seatMat = U.mat(0x2a2c2e, { roughness: 0.9 });
-  const consoleMat = U.mat(0x3a3d40, { roughness: 0.8, metalness: 0.2 });
+  const seatMat = U.surface(U.mat(0x2a2c2e, { roughness: 0.9 }), 'fabric');
+  const consoleMat = U.surface(U.mat(0x3a3d40, { roughness: 0.83, metalness: 0.08 }), 'paint');
   const screenMat = U.mat(0x0c1014, { roughness: 0.3, metalness: 0.4, emissive: 0x0a2230 });
   const metal = U.metal(), dark = U.darkMetal();
   const gun = U.mat(0x25282a, { roughness: 0.55, metalness: 0.5, name: 'gun' });
@@ -325,11 +336,11 @@ CB90.buildSuperstructure = function (THREE) {
   parts.cabinBounds = { x0: M.WH_X0 + 0.02, x1: doorX - 0.06, z0: -1.34, z1: 1.34, floorY: M.TROOP_FLOOR_Y, ceilingY: M.WH_ROOF_Y - RT };
   {
     const enamel = U.mat(0xb9c3bd, { roughness: 0.68, metalness: 0.12 });
-    const panelPaint = U.mat(0x404c49, { roughness: 0.55, metalness: 0.30 });
-    const consoleTop = U.mat(0x202827, { roughness: 0.8, metalness: 0.07 });
-    const upholstery = U.mat(0x293331, { roughness: 0.94, metalness: 0 });
+    const panelPaint = U.surface(U.mat(0x404c49, { roughness: 0.63, metalness: 0.12 }), 'paint');
+    const consoleTop = U.surface(U.mat(0x202827, { roughness: 0.86, metalness: 0.03 }), 'grit');
+    const upholstery = U.surface(U.mat(0x293331, { roughness: 0.94, metalness: 0 }), 'fabric');
     const stitching = U.mat(0x89928b, { roughness: 1, metalness: 0 });
-    const aluminum = U.mat(0xa3ada9, { roughness: 0.38, metalness: 0.78 });
+    const aluminum = U.surface(U.mat(0xa3ada9, { roughness: 0.34, metalness: 0.82 }), 'metal');
     const brass = U.mat(0x998568, { roughness: 0.4, metalness: 0.7 });
     const rubber = U.mat(0x111715, { roughness: 0.85, metalness: 0 });
     const amber = U.mat(0xd9a85b, { emissive: 0x714315, roughness: 0.35 });

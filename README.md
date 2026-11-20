@@ -8,6 +8,16 @@ Kör Stridsbåt 90 H genom en procedurellt genererad svensk skärgård, gå ombo
 
 All simulering och rendering körs lokalt, i Windows-programmet eller webbläsaren. Inga API-nycklar, konton eller separat backend behövs. Projektet är en visuell rekonstruktion med förenklad fysik, inte en certifierad simulator eller konstruktionsmodell.
 
+## Grafikuppdatering 19 november 2026
+
+Båten har separata ytstrukturer för målad aluminium, metall, gummi, rep, klädsel och halkskydd. Kamouflaget har diskreta avrinningsspår och en mörkare, blankare vattenlinje. Glaset reflekterar mer i sneda vinklar och är genomskinligare från förarplatsen. Fendrar, förtöjningstampar, ventilationsgaller och räckesinfästningar har fått fler modellerade detaljer. Skrovets referensbaserade huvudmått och öppningsmekanismer är bevarade.
+
+Ljusreflektionerna på båten beräknas från samma himmel som syns över havet och följer tid och väder. Molnen har fler skikt, skogen mjukare kronor och vindrörelser, och graniten tydligare variation mellan torra och våta ytor. Vitskummet är sparsamt i svag vind och blir tydligare i hårdare väder; det befintliga skrovdrivna svallsystemet är kvar. Hög kvalitet ger skarpare närskuggor och upp till dubbel skärmupplösning på dator.
+
+Startvyn lämnar mer plats åt modellen. **Inspektera** öppnar reglagen. **Dagsljus**, **Kvällsljus** och **Morgondis** väljer en fast ljussättning; **Natt** finns under Väder. Slå på dygnscykeln igen för att låta tiden gå. **Fokusvy** eller **V** döljer reglagen i exteriörläge; **Esc** eller **Visa reglagen** återställer dem. Alla ytstrukturer och himmelsreflektioner genereras lokalt, så den fristående HTML-filen fungerar fortfarande utan internet.
+
+Efter bygget kan `node tools/graphics-render-test.js` kontrollera den paketerade appens grafik och spara jämförelsevyer. Testet kräver Playwright och Chrome och täcker bland annat ljusbyten, återanvändning av reflektionskartor, fokusvy, öppna luckor, genomskärning, förarplats, låg kvalitet och mobilpanel.
+
 ## Ladda ner för Windows
 
 Hämta programmet från [senaste releasen](https://github.com/gitterkorso/stridsbat90/releases/latest). Välj en av filerna:

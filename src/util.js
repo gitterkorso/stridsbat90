@@ -33,25 +33,37 @@ window.CB90 = window.CB90 || {};
     matCache.set(key, m);
     return m;
   };
-  U.glass = () => U.mat(CB90.COLORS.GLASS, { roughness: 0.15, metalness: 0.6, opacity: 0.78, side: THREE.DoubleSide, name: 'glass' });
-  U.metal = () => U.mat(CB90.COLORS.METAL, { roughness: 0.45, metalness: 0.7 });
-  U.darkMetal = () => U.mat(CB90.COLORS.DARK_METAL, { roughness: 0.5, metalness: 0.6 });
-  U.deck = () => {
-    const m = U.mat(0x45483c, { roughness: 0.93, metalness: 0.13 });
-    if (!m.bumpMap && typeof document !== 'undefined') {
-      const c = document.createElement('canvas'); c.width = c.height = 128;
-      const ctx = c.getContext('2d'), d = ctx.createImageData(128,128);
-      let seed = 8571;
-      for(let i=0;i<d.data.length;i+=4) { seed=(seed*16807)%2147483647; const n=110+seed%70; d.data[i]=d.data[i+1]=d.data[i+2]=n;d.data[i+3]=255; }
-      ctx.putImageData(d,0,0); const t = new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.repeat.set(12,12);
-      m.bumpMap=t;m.bumpScale=.018;
+  // Small, deterministic linear-data maps: distinct surface response without
+  // external assets or a draw call for every scratch. Never use sRGB for these.
+  const surfaceMaps = new Map();
+  U.surface = function(material, kind) {
+    if (!surfaceMaps.has(kind)) {
+      const size=128, bump=new Uint8Array(size*size*4), rough=new Uint8Array(size*size*4);
+      let seed=8713;
+      for(let y=0;y<size;y++) for(let x=0;x<size;x++) {
+        seed=(seed*16807)%2147483647;
+        const n=seed%101/100, grain=kind==='rope' ? Math.sin(x*Math.PI/8+y*Math.PI/2)*25+Math.sin(x*Math.PI/2-y*Math.PI/4)*8 : kind==='fabric' ? Math.sin(x*Math.PI/2)*Math.cos(y*Math.PI/2)*24 :
+          kind==='metal' ? Math.sin(y*.71)*13+n*7 : kind==='grit' ? (n>.80?42:-13)+n*24 : n*32-16;
+        const i=(y*size+x)*4, b=Math.round(128+grain), r=Math.round(218+n*30);
+        for(let k=0;k<3;k++){bump[i+k]=b;rough[i+k]=r;}bump[i+3]=rough[i+3]=255;
+      }
+      const texture=data=>{const t=new THREE.DataTexture(data,size,size,THREE.RGBAFormat);
+        t.wrapS=t.wrapT=THREE.RepeatWrapping;t.generateMipmaps=true;t.minFilter=THREE.LinearMipmapLinearFilter;
+        t.magFilter=THREE.LinearFilter;t.anisotropy=4;t.repeat.set(kind==='grit'?5:3,kind==='metal'?7:3);t.needsUpdate=true;return t;};
+      surfaceMaps.set(kind,{bump:texture(bump),rough:texture(rough)});
     }
-    return m;
+    const maps=surfaceMaps.get(kind);material.bumpMap=maps.bump;material.roughnessMap=maps.rough;
+    material.bumpScale=kind==='grit'?.004:kind==='rope'?.003:kind==='fabric'?.0018:kind==='rubber'?.0015:.0008;
+    return material;
   };
-  U.rubber = () => U.mat(CB90.COLORS.RUBBER, { roughness: 1.0, metalness: 0.0 });
-  U.jetAlu = () => U.mat(CB90.COLORS.JET_ALU, { roughness: 0.4, metalness: 0.75 });
-  U.jetSteel = () => U.mat(CB90.COLORS.JET_STEEL, { roughness: 0.3, metalness: 0.9 });
-  U.hydraulic = () => U.mat(CB90.COLORS.HYDRAULIC, { roughness: 0.4, metalness: 0.6 });
+  U.glass = () => U.mat(CB90.COLORS.GLASS, { roughness: 0.10, metalness: 0.04, opacity: 0.38, side: THREE.DoubleSide, name: 'glass' });
+  U.metal = () => U.surface(U.mat(CB90.COLORS.METAL, { roughness: 0.38, metalness: 0.82 }), 'metal');
+  U.darkMetal = () => U.surface(U.mat(CB90.COLORS.DARK_METAL, { roughness: 0.46, metalness: 0.62 }), 'metal');
+  U.deck = () => U.surface(U.mat(0x45483c, { roughness: 0.94, metalness: 0.08, name:'non-slip-deck' }), 'grit');
+  U.rubber = () => U.surface(U.mat(0x1b1d1b, { roughness: 0.91, metalness: 0.0 }), 'rubber');
+  U.jetAlu = () => U.surface(U.mat(CB90.COLORS.JET_ALU, { roughness: 0.34, metalness: 0.82 }), 'metal');
+  U.jetSteel = () => U.surface(U.mat(CB90.COLORS.JET_STEEL, { roughness: 0.23, metalness: 0.94 }), 'metal');
+  U.hydraulic = () => U.surface(U.mat(CB90.COLORS.HYDRAULIC, { roughness: 0.38, metalness: 0.65 }), 'metal');
 
   /** Splinter camouflage: returns one of CB90.COLORS.CAMO by hull position (hard-edged angular fields, symmetric port/starboard). */
   const camoCols = null;
@@ -66,7 +78,7 @@ window.CB90 = window.CB90 || {};
     return new THREE.Color(CB90.COLORS.CAMO[U.camoIndex(x, y, z)]);
   };
   // A continuous, hand-drawn splinter pattern in hull coordinates. Polygon edges do not depend on mesh triangles.
-  let camoTexture;
+  let camoTexture, camoBump, camoRoughness;
   function getCamoTexture() {
     if (camoTexture || typeof document === 'undefined') return camoTexture;
     const c=document.createElement('canvas');c.width=2048;c.height=768;
@@ -89,23 +101,51 @@ window.CB90 = window.CB90 || {};
       ['#313b30',[882,646,970,560,1110,768,920,768]]
     ];
     for(const [color,p] of patches) {x.fillStyle=color;x.beginPath();x.moveTo(p[0],p[1]);for(let i=2;i<p.length;i+=2)x.lineTo(p[i],p[i+1]);x.closePath();x.fill();}
-    // Restrained paint grain rather than noisy geometry coloration.
+    // Thin, washed-out runoff and mottled paint, rather than rust on an aluminium hull.
+    let runoffSeed=923;
+    for(let i=0;i<180;i++) {
+      runoffSeed=(runoffSeed*16807)%2147483647;const px=runoffSeed%2048;
+      runoffSeed=(runoffSeed*16807)%2147483647;const py=runoffSeed%768;
+      const length=24+runoffSeed%112,width=1+runoffSeed%3;
+      const wash=x.createLinearGradient(0,py,0,py+length);
+      wash.addColorStop(0,'rgba(18,27,23,.07)');wash.addColorStop(1,'rgba(18,27,23,0)');
+      x.fillStyle=wash;x.fillRect(px,py,width,length);
+    }
+    // Colour and surface maps share the hull-coordinate UV layout. Their grain
+    // is millimetre-scale at the 16 m texture width, and mipmapped at a distance.
     let seed=512; const d=x.getImageData(0,0,c.width,c.height);
-    for(let i=0;i<d.data.length;i+=4){seed=(seed*16807)%2147483647;const n=(seed%9)-4;d.data[i]+=n;d.data[i+1]+=n;d.data[i+2]+=n;}
+    const bump=new Uint8Array(d.data.length),rough=new Uint8Array(d.data.length);
+    for(let i=0;i<d.data.length;i+=4){
+      seed=(seed*16807)%2147483647;const n=(seed%9)-4,px=(i/4)%c.width,py=Math.floor(i/4/c.width);
+      const mottle=Math.sin(px*.024+Math.sin(py*.021))*Math.sin(py*.045)*2.2;
+      for(let k=0;k<3;k++){d.data[i+k]+=n+mottle;bump[i+k]=128+n*4;rough[i+k]=227+n*3+mottle*3;}
+      bump[i+3]=rough[i+3]=255;
+    }
     x.putImageData(d,0,0);
     camoTexture=new THREE.CanvasTexture(c);camoTexture.encoding=THREE.sRGBEncoding;camoTexture.wrapS=camoTexture.wrapT=THREE.RepeatWrapping;camoTexture.anisotropy=8;
+    const dataMap=data=>{const t=new THREE.DataTexture(data,c.width,c.height,THREE.RGBAFormat);
+      t.wrapS=t.wrapT=THREE.RepeatWrapping;t.generateMipmaps=true;t.minFilter=THREE.LinearMipmapLinearFilter;t.anisotropy=8;t.needsUpdate=true;return t;};
+    camoBump=dataMap(bump);camoRoughness=dataMap(rough);
     return camoTexture;
   }
   U.camoMaterial = function(opts) {
-    const m=U.mat(0xffffff,Object.assign({roughness:0.84,metalness:0.12,name:'camo'},opts||{}));
+    const m=U.mat(0xffffff,Object.assign({roughness:0.91,metalness:0.08,name:'camo'},opts||{}));
     m.map=getCamoTexture();
+    m.bumpMap=camoBump;m.bumpScale=.002;m.roughnessMap=camoRoughness;
     m.onBeforeCompile=(shader)=>{
       shader.vertexShader='attribute float hullHeight; varying float vHullHeight;\n'+shader.vertexShader;
       shader.vertexShader=shader.vertexShader.replace('#include <begin_vertex>','#include <begin_vertex>\nvHullHeight=hullHeight;');
       shader.fragmentShader='varying float vHullHeight;\n'+shader.fragmentShader;
-      shader.fragmentShader=shader.fragmentShader.replace('#include <map_fragment>','#include <map_fragment>\nif(vHullHeight<0.10) diffuseColor.rgb=vec3(0.027,0.034,0.031);');
+      shader.fragmentShader=shader.fragmentShader.replace('#include <map_fragment>',`#include <map_fragment>
+        float paintDamp=1.0-smoothstep(.10,.38,vHullHeight);
+        diffuseColor.rgb*=1.0-paintDamp*.16;
+        if(vHullHeight<0.10) diffuseColor.rgb=vec3(0.027,0.034,0.031);
+      `);
+      shader.fragmentShader=shader.fragmentShader.replace('#include <roughnessmap_fragment>',`#include <roughnessmap_fragment>
+        roughnessFactor=mix(roughnessFactor,.34,(1.0-smoothstep(.02,.32,vHullHeight))*.78);
+      `);
     };
-    m.customProgramCacheKey=()=> 'cb90-paint-v2';
+    m.customProgramCacheKey=()=> 'cb90-paint-v3';
     return m;
   };
   // Three r128's Material.clone omits shader callbacks. Preserve the paint's

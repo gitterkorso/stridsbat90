@@ -18,9 +18,9 @@ CB90.buildEquipment = function (THREE) {
 
   // ---------- materials ----------
   // The 845 illustration and the 826 photograph show painted fittings rather than polished aluminium.
-  const metal = U.mat(0x45483f, { roughness: .82, metalness: .12, name: 'painted-deck-fittings' });
+  const metal = U.surface(U.mat(0x45483f, { roughness: .86, metalness: .08, name: 'painted-deck-fittings' }), 'paint');
   const dark = U.darkMetal(), rubber = U.rubber(), hyd = U.hydraulic();
-  const radarPaint = U.mat(0x565853, { roughness: .78, metalness: .12, name: 'radar-painted-housing' });
+  const radarPaint = U.surface(U.mat(0x565853, { roughness: .82, metalness: .06, name: 'radar-painted-housing' }), 'paint');
   const white = U.mat(C.WHITE, { roughness: 0.6, metalness: 0.05, name: 'white' });
   const antGrey = U.mat(0xd9dbda, { roughness: 0.5, metalness: 0.1, name: 'antenna' });
   const gun = U.mat(0x25282a, { roughness: 0.55, metalness: 0.5, name: 'gun' });
@@ -39,18 +39,23 @@ CB90.buildEquipment = function (THREE) {
   const deckYAt = (x, z) => U.deckYAt(x, z);
   /** Merge several (transformed) meshes into ONE mesh with the given material (keeps the mesh count down). */
   function mergeMeshes(meshes, material) {
-    const pos = [], nor = [];
+    const pos = [], nor = [], uv = [];
     for (const m of meshes) {
       m.updateMatrix();
       const g = (m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone()).applyMatrix4(m.matrix);
       const p = g.attributes.position.array, n = g.attributes.normal.array;
       for (let i = 0; i < p.length; i++) pos.push(p[i]);
       for (let i = 0; i < n.length; i++) nor.push(n[i]);
+      // Preserve the surface coordinates when batching fittings; materials
+      // with bump/roughness maps otherwise collapse to one texel after merge.
+      const sourceUV=g.attributes.uv;
+      for(let i=0;i<g.attributes.position.count;i++)uv.push(sourceUV?sourceUV.getX(i):p[i*3],sourceUV?sourceUV.getY(i):p[i*3+1]+p[i*3+2]);
       g.dispose();
     }
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
     const mesh = new THREE.Mesh(g, material); mesh.castShadow = true; mesh.receiveShadow = true;
     return mesh;
   }
@@ -282,17 +287,17 @@ CB90.buildEquipment = function (THREE) {
   // The centre piece belongs to the moving bow ramp in hull.js, leaving visible joints at both corners.
   const fend=sub('fenders'), bowPads=sub('bowFenderPads',fend), aftStrips=sub('aftRubbingStrips',fend);
   function sweptPad(x0,x1,side,profile,material,name) {
-    const positions=[],indices=[],n=64,m=profile.length;
+    const positions=[],indices=[],uv=[],n=64,m=profile.length;
     for(let i=0;i<=n;i++) {
       const x=x0+(x1-x0)*i/n,st=U.stationAt(x);
-      for(const [out,dy] of profile) positions.push(x,st.deckY+dy,side*(st.deckZ+out));
+      for(let k=0;k<m;k++){const [out,dy]=profile[k];positions.push(x,st.deckY+dy,side*(st.deckZ+out));uv.push((x-x0)*.5,k/m);}
     }
     for(let i=0;i<n;i++) for(let k=0;k<m;k++) {
       const a=i*m+k,b=i*m+(k+1)%m,c=(i+1)*m+k,d=(i+1)*m+(k+1)%m;
       indices.push(a,c,b,b,c,d);
     }
     for(let k=1;k<m-1;k++){indices.push(0,k,k+1);indices.push(n*m,n*m+k+1,n*m+k);}
-    const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));g.setIndex(indices);g.computeVertexNormals();
+    const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));g.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2));g.setIndex(indices);g.computeVertexNormals();
     const mesh=new THREE.Mesh(g,material);mesh.name=name;mesh.castShadow=true;mesh.receiveShadow=true;return mesh;
   }
   // Six-sided rubber face: flat outer face with chamfered upper/lower edges, not a round inflated tube.
@@ -452,8 +457,8 @@ CB90.buildEquipment = function (THREE) {
   // ================= REFERENCE OUTFITTING: RAILS, ROPES, SURVIVAL GEAR =================
   const detail=sub('workingDeckDetails');
   parts.bowGrabRails=[];
-  const orange=U.mat(0xe75822,{roughness:.78}), ropeMat=U.mat(0xb2ad8e,{roughness:.98});
-  const fieldGreen=U.mat(0x515444,{roughness:.88,metalness:.05});
+  const orange=U.surface(U.mat(0xe75822,{roughness:.82}), 'rubber'), ropeMat=U.surface(U.mat(0xa6a28a,{roughness:.98}), 'rope');
+  const fieldGreen=U.surface(U.mat(0x515444,{roughness:.9,metalness:.03}), 'paint');
   const rimGreen=U.mat(0x30362c,{roughness:.85});
   // The raised troop deck carries a tall protective rail, as on the reference boat.
   for(const side of [-1,1]) {
@@ -517,14 +522,18 @@ CB90.buildEquipment = function (THREE) {
     grab.name=side<0?'bowGrabP':'bowGrabS';detail.add(grab);parts.bowGrabRails.push({rail:grab,feet:grabFeet});
     // Coiled mooring line and a suspended cylindrical fender near the aft quarter.
     const ropeX=1.25,ropeZ=side*.98,ropeY=aftY+.042;
-    for(let i=0;i<5;i++) {
-      const r=.085+i*.026,pts=[];
-      for(let j=0;j<=48;j++){const a=j/48*PI*2;pts.push(V3(ropeX+Math.cos(a)*r,ropeY+i*.003,ropeZ+Math.sin(a)*r));}
-      detail.add(U.tube(pts,.012,ropeMat,48));
-    }
+    const coil=[];
+    for(let j=0;j<=240;j++){const t=j/240,a=t*PI*10,r=.065+t*.13;coil.push(V3(ropeX+Math.cos(a)*r,ropeY+t*.010,ropeZ+Math.sin(a)*r));}
+    coil.push(V3(ropeX+.25,ropeY+.009,ropeZ+.06),V3(ropeX+.31,ropeY+.008,ropeZ+.18),V3(ropeX+.48,ropeY+.008,ropeZ+.19));
+    const line=U.tube(coil,.012,ropeMat,260);line.name='continuousMooringCoil';detail.add(line);
     const fx=M.TRUNK_X0-.51,fz=side*(U.stationAt(fx).deckZ+.10),fy=aftY-.13;
-    detail.add(U.cyl(.125,.125,.43,rubber,14,[fx,fy,fz]));
-    detail.add(sphere(.125,V3(fx,fy+.21,fz),rubber));detail.add(sphere(.125,V3(fx,fy-.21,fz),rubber));
+    const fenderProfile=[new THREE.Vector2(0,-.335),new THREE.Vector2(.065,-.317),new THREE.Vector2(.109,-.273),
+      new THREE.Vector2(.125,-.21),new THREE.Vector2(.125,.21),new THREE.Vector2(.109,.273),new THREE.Vector2(.065,.317),new THREE.Vector2(0,.335)];
+    const fender=new THREE.Mesh(new THREE.LatheGeometry(fenderProfile,24),rubber);fender.position.set(fx,fy,fz);
+    fender.name='mouldedQuarterFender';fender.castShadow=fender.receiveShadow=true;detail.add(fender);
+    const ribs=[];
+    for(let i=0;i<12;i++){const a=i*PI/6;ribs.push(U.bar(V3(fx+Math.cos(a)*.124,fy-.19,fz+Math.sin(a)*.124),V3(fx+Math.cos(a)*.124,fy+.19,fz+Math.sin(a)*.124),.004,rubber));}
+    detail.add(mergeMeshes(ribs,rubber));
     detail.add(U.tube([V3(fx,fy+.3,fz),V3(fx,aftRailY-.19,side*1.76),V3(fx+.06,aftRailY-.27,side*1.73)],.014,ropeMat,16));
   }
   function lifeRing(x,y,z,side) {
@@ -580,13 +589,17 @@ CB90.buildEquipment = function (THREE) {
   }
   chains.add(mergeMeshes(links,metal));
   // Three inset ventilation slots below the raised troop deck. The supplied 845 illustration has no regular rivet row.
+  const slotLouvres=[];
   for(const side of [-1,1]) {
     for(const x of [5.72,6.75,7.78]) {
       const y=U.stationAt(x).deckY-.45,z=side*(U.hullHalfWidthAt(x,y)+.024);
       detail.add(U.box(.61,.088,.022,soot,[x,y,z]));
       detail.add(U.box(.64,.014,.035,dark,[x,y+.055,z]));
+      for(const dy of [-.020,.006,.032])slotLouvres.push(U.box(.58,.008,.024,metal,[x,y+dy,z+side*.014]));
+      for(const dx of [-.20,0,.20])slotLouvres.push(U.box(.008,.074,.024,metal,[x+dx,y,z+side*.015]));
     }
   }
+  const ventilation=mergeMeshes(slotLouvres,metal);ventilation.name='topsidesVentLouvres';detail.add(ventilation);
 
   // Photo-specific port access lid, low coaming and deck-edge fasteners.
   const foredeckDetails=sub('foredeckPhotoDetails');
@@ -618,6 +631,20 @@ CB90.buildEquipment = function (THREE) {
       foredeckDetails.add(U.box(.05,.018,.04,metal,[x,st.deckY+.009,z]));
     }
   }
+  // Fasteners belong on the existing fittings, not an invented rivet pattern
+  // over the welded hull. All fixed heads/washers share just two draw calls.
+  const boltHeads=[],boltWashers=[];
+  group.updateMatrixWorld(true);
+  for(const contact of parts.deckContacts) {
+    if(!['trunk-rail-foot','ring-foot','bow-grab-foot','front-rail-foot'].includes(contact.kind))continue;
+    const bounds=new THREE.Box3().setFromObject(contact.object),pad=.024;
+    for(const x of [bounds.min.x+pad,bounds.max.x-pad])for(const z of [bounds.min.z+pad,bounds.max.z-pad]) {
+      boltWashers.push(U.cyl(.011,.011,.003,dark,12,[x,bounds.max.y+.0015,z]));
+      boltHeads.push(U.cyl(.007,.007,.007,metal,6,[x,bounds.max.y+.0065,z]));
+    }
+  }
+  const hardware=sub('deckMountingHardware');
+  hardware.add(mergeMeshes(boltWashers,dark),mergeMeshes(boltHeads,metal));
   // ================= behaviour =================
   let radarOn = true, radarRpm = M.RADAR_RPM;
   function setRadar(on, rpm) { radarOn = !!on; if (rpm != null && isFinite(rpm)) radarRpm = rpm; }

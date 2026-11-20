@@ -874,6 +874,21 @@ CB90.buildHull = function (THREE) {
     parts.engineDoor=rec.pivot;
   }
 
+  // The lofted decks previously had no UVs: the non-slip texture sampled one
+  // constant texel. Project in metres, choosing each face's dominant plane so
+  // the thin vertical hatch edges also retain a consistent grain scale.
+  group.traverse(mesh=>{
+    if(!mesh.isMesh || mesh.material.name!=='non-slip-deck')return;
+    const geometry=mesh.geometry,p=geometry.attributes.position,n=geometry.attributes.normal,uv=[];
+    for(let i=0;i<p.count;i++) {
+      const nx=Math.abs(n.getX(i)),ny=Math.abs(n.getY(i)),nz=Math.abs(n.getZ(i));
+      if(ny>=nx && ny>=nz)uv.push(p.getX(i)*.8,p.getZ(i)*.8);
+      else if(nx>=nz)uv.push(p.getZ(i)*.8,p.getY(i)*.8);
+      else uv.push(p.getX(i)*.8,p.getY(i)*.8);
+    }
+    geometry.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2));
+  });
+
   // ---------------------------------------------------------------- cutaway
   let cutaway = false;
   function setCutaway(on) {

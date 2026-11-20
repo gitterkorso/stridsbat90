@@ -18,6 +18,7 @@ CB90.buildEnvironment = function (THREE, world) {
 
   // ---------- materials ----------
   const foamTime = { value: 0 };
+  const foliageWind = { value: new THREE.Vector2(-3.81, -1.20) };
   const rockMat = new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.93, metalness: 0.015, envMapIntensity: 0.23 });
   rockMat.name = 'Weathered coastal granite, lichen and wet waterline';
   rockMat.onBeforeCompile = function (shader) {
@@ -38,17 +39,63 @@ CB90.buildEnvironment = function (THREE, world) {
       float rNoise(vec3 p){vec3 i=floor(p),f=fract(p);f=f*f*(3.0-2.0*f);return mix(mix(mix(rHash(i),rHash(i+vec3(1,0,0)),f.x),mix(rHash(i+vec3(0,1,0)),rHash(i+vec3(1,1,0)),f.x),f.y),mix(mix(rHash(i+vec3(0,0,1)),rHash(i+vec3(1,0,1)),f.x),mix(rHash(i+vec3(0,1,1)),rHash(i+vec3(1,1,1)),f.x),f.y),f.z);}
     `);
     shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
-      float fleck=rNoise(vRockPoint*13.0)*0.12+rNoise(vRockPoint*2.7)*0.19;
-      float vein=pow(max(0.0,sin(vRockPoint.x*0.75+vRockPoint.y*3.5+vRockPoint.z*0.4+rNoise(vRockPoint*0.32)*4.0)),12.0);
-      diffuseColor.rgb*=0.80+fleck;
-      diffuseColor.rgb=mix(diffuseColor.rgb,diffuseColor.rgb*1.16,vein*0.33);
+      // World-space grain remains continuous across chunk borders and differently scaled boulders.
+      float mineral=rNoise(vRockWorld*2.7);
+      float closeDetail=1.0-smoothstep(45.0,200.0,length(cameraPosition-vRockWorld));
+      float fleck=mix(0.5,rNoise(vRockWorld*13.0),closeDetail)*0.14+mineral*0.24;
+      float vein=pow(max(0.0,sin(vRockWorld.x*0.75+vRockWorld.y*3.5+vRockWorld.z*0.4+rNoise(vRockWorld*0.32)*4.0)),12.0);
+      diffuseColor.rgb*=0.72+fleck;
+      diffuseColor.rgb=mix(diffuseColor.rgb,diffuseColor.rgb*1.28,vein*0.46);
+      diffuseColor.rgb+=vec3(.045,.039,.033)*smoothstep(.68,.83,mineral)*closeDetail;
       // A faint breaking ripple travels along the real waterline (world height within ±0.35 m).
       float shore=1.0-smoothstep(0.0,0.35,abs(vRockWorld.y));
       float ripple=0.5+0.5*sin(vRockWorld.x*1.7+vRockWorld.z*1.3+rNoise(vRockWorld*0.6)*5.0-uShoreTime*1.6);
       diffuseColor.rgb+=vec3(0.16,0.19,0.18)*shore*ripple*ripple*0.55;
     `);
+    shader.fragmentShader = shader.fragmentShader.replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+      float wetRock=1.0-smoothstep(.05,.82,vRockWorld.y+rNoise(vRockWorld*1.4)*.14);
+      roughnessFactor=mix(roughnessFactor,.32,wetRock*.88);
+    `);
   };
   const pineMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, metalness: 0, vertexColors: true, envMapIntensity: 0.12 });
+  pineMat.name = 'Soft needle crowns and leaf clusters';
+  pineMat.onBeforeCompile = function(shader) {
+    shader.uniforms.uFoliageTime=foamTime;shader.uniforms.uFoliageWind=foliageWind;
+    shader.vertexShader=shader.vertexShader.replace('#include <common>', `#include <common>
+      uniform float uFoliageTime;uniform vec2 uFoliageWind;
+      varying vec3 vFoliageWorld;varying float vCanopyHeight;
+    `);
+    shader.vertexShader=shader.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+      vec4 treeOrigin=vec4(0.0,0.0,0.0,1.0);
+      #ifdef USE_INSTANCING
+        treeOrigin=instanceMatrix*treeOrigin;
+      #endif
+      treeOrigin=modelMatrix*treeOrigin;
+      vCanopyHeight=position.y;
+      float bend=smoothstep(.35,1.0,position.y);
+      float gust=sin(uFoliageTime*1.3+treeOrigin.x*.063+treeOrigin.z*.041)
+                +.35*sin(uFoliageTime*2.7+treeOrigin.z*.17+position.y*9.0);
+      transformed.xz+=uFoliageWind*gust*bend*.0015;
+      vec4 foliagePoint=vec4(transformed,1.0);
+      #ifdef USE_INSTANCING
+        foliagePoint=instanceMatrix*foliagePoint;
+      #endif
+      vFoliageWorld=(modelMatrix*foliagePoint).xyz;
+    `);
+    shader.fragmentShader=shader.fragmentShader.replace('#include <common>', `#include <common>
+      varying vec3 vFoliageWorld;varying float vCanopyHeight;
+      float leafHash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
+      float leafNoise(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.0-2.0*f);return mix(mix(leafHash(i),leafHash(i+vec2(1,0)),f.x),mix(leafHash(i+vec2(0,1)),leafHash(i+vec2(1,1)),f.x),f.y);}
+    `);
+    shader.fragmentShader=shader.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
+      float canopy=leafNoise(vFoliageWorld.xz*2.1+vFoliageWorld.y*.73);
+      float leafDetail=1.0-smoothstep(80.0,260.0,length(cameraPosition-vFoliageWorld));
+      float needles=leafNoise(vFoliageWorld.xz*13.0+vFoliageWorld.y*vec2(7.3,4.1));
+      diffuseColor.rgb*=mix(.77,1.19,canopy)*mix(1.0,.78+needles*.44,leafDetail);
+      // Dark interiors and lighter growing tips give each crown depth without extra geometry.
+      diffuseColor.rgb*=mix(.80,1.06,smoothstep(.30,.95,vCanopyHeight));
+    `);
+  };
   const trunkMat = new THREE.MeshStandardMaterial({ color: linColor(0x64564a), roughness: 1, envMapIntensity: 0.18 });
   const shrubMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, envMapIntensity: 0.16 });
   const boulderMat = rockMat;
@@ -87,6 +134,18 @@ CB90.buildEnvironment = function (THREE, world) {
   }
   // Scots pines: open trunks, spreading limbs and separate wind-shaped needle crowns. Lump indices select which of the
   // twelve crown clumps are built (11 is the leader), so the far variant is a subset of the near silhouette.
+  function canopyNormals(g,cx,cy,cz,rx,ry,rz) {
+    // The crowns are non-indexed. computeVertexNormals alone leaves every triangle flat.
+    // Blend ellipsoid normals with a little of that irregular face normal to keep leafy volume.
+    g.computeVertexNormals();
+    const p=g.attributes.position,n=g.attributes.normal,v=new THREE.Vector3();
+    for(let i=0;i<p.count;i++){
+      v.set((p.getX(i)-cx)/(rx*rx),(p.getY(i)-cy)/(ry*ry),(p.getZ(i)-cz)/(rz*rz)).normalize();
+      v.multiplyScalar(.88).addScaledVector(new THREE.Vector3(n.getX(i),n.getY(i),n.getZ(i)),.12).normalize();
+      n.setXYZ(i,v.x,v.y,v.z);
+    }
+    return g;
+  }
   function crownPieces(indices, detail) {
     return indices.map(function (i) {
       const a = i * 2.39996, r = i === 11 ? 0 : 0.28 + 0.53 * hash(i, 9);
@@ -98,7 +157,7 @@ CB90.buildEnvironment = function (THREE, world) {
         const ragged = 0.82 + hash(Math.round(x * 100 + i * 11), Math.round(z * 100 + v * 20)) * 0.35;
         p.setXYZ(j, x * width * ragged + Math.cos(a) * r, v * (0.085 + hash(i, 4) * 0.055) * ragged + y, z * width * ragged + Math.sin(a) * r);
       }
-      g.computeVertexNormals(); return g;
+      return canopyNormals(g,Math.cos(a)*r,y,Math.sin(a)*r,width,.085+hash(i,4)*.055,width);
     });
   }
   function trunkPieces(branches, segs) {
@@ -164,7 +223,8 @@ CB90.buildEnvironment = function (THREE, world) {
           const rag = .86 + .24 * hash(Math.round(x * 71 + i), Math.round(z * 53 + y * 19));
           pos.setXYZ(j, x * .15 * rag + Math.cos(a) * radius, y * .19 * rag + .43 + t * .42, z * .14 * rag + Math.sin(a) * radius);
         }
-        g.computeVertexNormals(); add(g, [0x6d8548, 0x849952, 0x587440][i % 3]);
+        canopyNormals(g,Math.cos(a)*radius,.43+t*.42,Math.sin(a)*radius,.15,.19,.14);
+        add(g, [0x6d8548, 0x849952, 0x587440][i % 3]);
       }
     }
     const merged = mergePieces(pieces, colours);
@@ -440,6 +500,7 @@ CB90.buildEnvironment = function (THREE, world) {
   function update(dt, state, t) {
     const time = typeof t === 'number' ? t : (typeof dt === 'number' ? dt : 0);
     foamTime.value = time;
+    if(state&&state.wind)foliageWind.value.set(Number(state.wind.x)||0,Number(state.wind.z)||0);
     buoys.forEach(function (b, i) { b.position.y = Math.sin(time * 1.2 + i * 2) * 0.055; b.rotation.x = Math.sin(time * 0.8 + i) * 0.025; b.rotation.z = Math.cos(time * 0.91 + i * 3) * 0.03; });
     lights.forEach(function (L) {
       const on = A.lightOn(L.spec.char, time + L.spec.phase); if (on === L.on) return; L.on = on;
