@@ -2,7 +2,7 @@
 // Exercise the application's actual movement rules and model geometry. Canvas stubs are texture-only.
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
-const root=path.resolve(__dirname,'..'),context={};context.window=context;vm.createContext(context);
+const root=path.resolve(__dirname,'..'),context={atob};context.window=context;vm.createContext(context);
 const source=file=>fs.readFileSync(path.join(root,'src',file),'utf8');
 for(const file of ['constants.js','navigation.js'])vm.runInContext(source(file),context,{filename:file});
 const M=context.CB90.M,doorX=M.WH_DOOR_X,floor=context.CB90.walkFloorAt,allowed=context.CB90.canWalkAt;
@@ -74,7 +74,7 @@ const threeFile=path.join(root,'src/vendor/three.min.js');let hull,structure,equ
 test('Model modules build successfully with valid, unique articulation records',()=>{
  assert.ok(fs.existsSync(threeFile),'Missing app runtime src/vendor/three.min.js');context.THREE=require(threeFile);
  context.document={createElement:type=>{assert.equal(type,'canvas');return mockCanvas();}};
- for(const file of ['util.js','hull.js','superstructure.js','equipment.js'])vm.runInContext(source(file),context,{filename:file});
+ for(const file of ['util.js','scania-di13-data.js','scania-di13.js','hull.js','superstructure.js','equipment.js'])vm.runInContext(source(file),context,{filename:file});
  hull=context.CB90.buildHull(context.THREE);structure=context.CB90.buildSuperstructure(context.THREE);equipment=context.CB90.buildEquipment(context.THREE);
  const ids=new Set();
  for(const module of [hull,structure,equipment])for(const rec of module.articulations){
@@ -194,6 +194,84 @@ test('Engine working hatches align with the inner rectangles of the old-H plan',
   const bounds=new context.THREE.Box3().setFromObject(rec.pivot);
   assert.ok(bounds.min.x>.90&&bounds.min.x<1.0&&bounds.max.x>2.80&&bounds.max.x<2.9,'Hatch bounds follow the mine rails rather than the lid');
  }
+});
+test('Each working hatch uncovers its own Scania DI13 and both copies share their mesh geometry',()=>{
+ const THREE=context.THREE,geometrySets=[];
+ function belongsTo(object,root){for(let node=object;node;node=node.parent)if(node===root)return true;return false;}
+ for(const [side,mountName] of [['P','dieselPort'],['S','dieselStarboard']]){
+  const mount=hull.parts.engines.getObjectByName(mountName),engine=mount&&mount.getObjectByName('Scania DI13');
+  assert.ok(engine,`Missing DI13 on ${side}`);
+  const geometries=new Set();
+  engine.traverse(o=>{if(o.isMesh)geometries.add(o.geometry);});
+  assert.ok(geometries.size>0,`Empty engine model on ${side}`);
+  geometrySets.push(geometries);
+  const hatch=hull.articulations.find(a=>a.id==='hatch_engine'+side);
+  const ray=new THREE.Raycaster(new THREE.Vector3(2.5,2.8,side==='P'?-.95:.95),new THREE.Vector3(0,-1,0));
+  function firstHit(open){
+   context.CB90.util.setArticulation(hatch,open);hull.group.updateMatrixWorld(true);
+   return ray.intersectObject(hull.group,true)[0]?.object;
+  }
+  assert.ok(belongsTo(firstHit(0),hatch.pivot),`${side} closed lid does not cover the engine`);
+  assert.ok(belongsTo(firstHit(1),engine),`${side} open lid does not expose its DI13`);
+  firstHit(0);
+ }
+ assert.equal(geometrySets[0].size,geometrySets[1].size);
+ for(const geo of geometrySets[0])assert.ok(geometrySets[1].has(geo),'Port and starboard duplicate geometry buffers');
+});
+test('Enclosed DI13s skip rendering but keep time and reappear through each opening',()=>{
+ const ids=['hatch_engineP','hatch_engineS','hatch_engineCompanion','door_engine'];
+ const hatches=Object.fromEntries(ids.map(id=>[id,{value:0}]));
+ const engines=hull.parts.engines, wheel=engines.getObjectByName('crank-gear');
+ const state={mode:'exterior',hatches,enginesOn:true,engineP:0,engineS:0};
+ const before=wheel.rotation.x;
+ hull.update(.01,state);
+ assert.equal(engines.visible,false);assert.ok(wheel.rotation.x>before);
+ state.paused=true;
+ for(const id of ids){
+  hatches[id].value=.001;hull.update(0,state);assert.equal(engines.visible,true,id);
+  hatches[id].value=0;hull.update(0,state);assert.equal(engines.visible,false,id);
+ }
+ state.mode='walk';hull.update(0,state);assert.equal(engines.visible,true);
+ state.mode='pilot';hull.update(0,state);assert.equal(engines.visible,false);
+ hull.setCutaway(true);hull.update(0,state);assert.equal(engines.visible,true);
+ hull.setCutaway(false);hull.update(0,state);assert.equal(engines.visible,false);
+ hull.update(0,{mode:'exterior',hatches:{}});assert.equal(engines.visible,true,'Unknown opening positions');
+ hull.update(0,state);assert.equal(engines.visible,false);
+ hull.update();assert.equal(engines.visible,true,'Standalone hull');
+});
+test('Both DI13 gear trains follow their individual engine controls and stop when paused',()=>{
+ const wheels=['dieselPort','dieselStarboard'].map(name=>{
+  const engine=hull.parts.engines.getObjectByName(name).getObjectByName('Scania DI13');
+  return ['crank-gear','idler-gear','cam-gear'].map(id=>{
+   const wheel=engine.getObjectByName(id);
+   assert.ok(wheel,`Missing ${id} on ${name}`);return wheel;
+  });
+ });
+ const angles=()=>wheels.map(train=>train.map(wheel=>wheel.rotation.x));
+ const state={enginesOn:true,paused:false,engineP:1,engineS:0};
+ function step(){
+  const before=angles();
+  hull.update(.005,state);
+  return angles().map((train,side)=>train.map((value,i)=>{
+   const delta=value-before[side][i];
+   return Math.atan2(Math.sin(delta),Math.cos(delta));
+  }));
+ }
+ function checkDrive(faster){
+  const delta=step();
+  assert.ok(delta[faster][0]>delta[1-faster][0], 'Higher throttle must turn its own crank faster');
+  for(const [crank,idler,cam] of delta){
+   assert.ok(crank>0,'Running engines turn at idle');
+   close(idler,-crank*26/48,'Idler direction and speed');
+   close(cam,crank/2,'Cam direction and speed');
+  }
+ }
+ checkDrive(0);
+ state.engineP=0;state.engineS=1;checkDrive(1);
+ const before=angles();
+ hull.update(0,state);assert.deepEqual(angles(),before,'Zero simulation time advances the gears');
+ state.paused=true;step();assert.deepEqual(angles(),before,'Pause advances the gears');
+ state.paused=false;state.enginesOn=false;step();assert.deepEqual(angles(),before,'Stopped engines advance the gears');
 });
 test('Source-visible starboard stowage pockets are real recesses through the passage wall',()=>{
  const THREE=context.THREE,storage=hull.parts.bowStowage;

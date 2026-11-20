@@ -9,9 +9,9 @@ const noop=()=>{},imageData=(w,h)=>({width:w,height:h,data:new Uint8ClampedArray
 const drawing=new Proxy({createImageData:imageData,getImageData:(_x,_y,w,h)=>imageData(w,h),
   createLinearGradient:()=>({addColorStop:noop}),createRadialGradient:()=>({addColorStop:noop}),
   measureText:t=>({width:String(t).length*12})},{get:(o,k)=>k in o?o[k]:noop});
-const context={THREE,console,document:{createElement:()=>({width:300,height:150,getContext:()=>drawing})}};
+const context={THREE,atob,console,document:{createElement:()=>({width:300,height:150,getContext:()=>drawing})}};
 context.window=context;vm.createContext(context);
-for(const f of ['constants.js','util.js','hull.js','superstructure.js','navigation.js'])
+for(const f of ['constants.js','util.js','scania-di13-data.js','scania-di13.js','hull.js','superstructure.js','navigation.js'])
   vm.runInContext(fs.readFileSync(path.join(root,'src',f),'utf8'),context,{filename:f});
 const CB=context.CB90,U=CB.util,hull=CB.buildHull(THREE),cabin=CB.buildSuperstructure(THREE);
 const door=hull.articulations.find(r=>r.id==='door_wtFwd');

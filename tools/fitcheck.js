@@ -18,7 +18,7 @@ global.window = global; global.self = global;
     measureText: (t) => ({ width: String(t).length * 12 }) }, { get: (o, k) => (k in o ? o[k] : noop) });
   global.document = { createElement: () => ({ width: 300, height: 150, getContext: () => context }) }; }
 global.THREE = require(threeFile);
-for (const f of ['constants.js', 'util.js', 'hull.js', 'superstructure.js', 'equipment.js']) {
+for (const f of ['constants.js', 'util.js', 'scania-di13-data.js', 'scania-di13.js', 'hull.js', 'superstructure.js', 'equipment.js']) {
   vm.runInThisContext(fs.readFileSync(path.join(ROOT, 'src', f), 'utf8'), { filename: f });
 }
 const U = CB90.util, M = CB90.M;

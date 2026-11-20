@@ -98,9 +98,9 @@ window.CB90 = window.CB90 || {};
     if(mode==='walk'){
       if(zone==='troop'){walk.x=6.4;walk.z=0;walk.yaw=0;}
       else if(zone==='bow'){walk.x=12.4;walk.z=0;walk.yaw=0;actions.setHatch('door_wtFwd',1);}
-      else if(zone==='engine'){walk.x=2.7;walk.z=0;walk.yaw=Math.PI;}
+      else if(zone==='engine'){walk.x=.96;walk.z=0;walk.yaw=-.52;}
       else {walk.x=9.0;walk.z=0;walk.yaw=previous==='pilot'?Math.PI:0;}
-      walk.pitch=-.08;
+      walk.pitch=zone==='engine'?-.27:-.08;
     }
     if(mode==='walk')walkEyeY=walkFloor(walk.x)+walkEyeHeight(walk.x);
     if(mode==='exterior'){camera.up.set(0,1,0);if(document.pointerLockElement)document.exitPointerLock();state.panelOpen=true;camera.fov=44;camera.updateProjectionMatrix();actions.setView(state.view||'overview',0);}

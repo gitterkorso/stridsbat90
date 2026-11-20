@@ -2,7 +2,7 @@ const {chromium}=require('playwright'),fs=require('fs'),path=require('path');
 (async()=>{const browser=await chromium.launch({channel:'chrome',headless:true,args:['--use-angle=swiftshader','--enable-unsafe-swiftshader']});try{
 const page=await browser.newPage({viewport:{width:1280,height:800}}),errors=[];
 page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
-await page.setContent('<body style="margin:0">'+['vendor/three.min','constants','util','hull','superstructure','equipment','waterjet','sea-state','weather','wake','water-depth','hull-waves','hull-wave-surface','water'].map(f=>'<script>'+fs.readFileSync('src/'+f+'.js','utf8')+'</script>').join(''));
+await page.setContent('<body style="margin:0">'+['vendor/three.min','constants','util','scania-di13-data','scania-di13','hull','superstructure','equipment','waterjet','sea-state','weather','wake','water-depth','hull-waves','hull-wave-surface','water'].map(f=>'<script>'+fs.readFileSync('src/'+f+'.js','utf8')+'</script>').join(''));
 await page.evaluate(()=>{
  const renderer=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});renderer.setSize(1280,800);renderer.outputEncoding=THREE.sRGBEncoding;renderer.toneMapping=THREE.ACESFilmicToneMapping;
  document.body.appendChild(renderer.domElement);const scene=new THREE.Scene();scene.background=new THREE.Color(0x91acbb);

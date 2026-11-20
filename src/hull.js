@@ -3,7 +3,7 @@
 // measured from the Dockstavarvet profile (constants.js STATIONS). The stävport is the whole raked stem face above the
 // sill; its nose bumper moves with it, while the fixed bow-shoulder rubber belongs to equipment.js.
 // Hatch openings connect the inhabited troop, machinery, cockpit and bow compartments.
-// Plain script; requires THREE (r128), constants.js and util.js.
+// Plain script; requires THREE (r128), constants.js, util.js and scania-di13.js.
 // Frame: metres, Y up, +X forward (bow), +Z starboard. Origin = transom × design waterline × centreline.
 //
 // Fit rules (so nothing pokes through the shell or leaves a gap):
@@ -342,36 +342,48 @@ CB90.buildHull = function (THREE) {
     interior.add(U.box(0.09,0.12,0.01,U.mat(0xe8dfc9),[x,y,z+0.073]));
   }
   extinguisher(7.13,0.48,-1.38); extinguisher(3.69,0.20,1.25);
-  // Twin V8 diesels: crankcase, ribbed cylinder banks, turbochargers, intake plumbing and filters.
-  const engines=new THREE.Group(); engines.name='twinDiesels'; interior.add(engines); parts.engines=engines;
-  const enginePaint=U.mat(0xb65332,{roughness:0.6,metalness:0.28});
-  for(const side of [-1,1]) {
-    const z=side*0.91, x=2.33;
-    const eng=new THREE.Group(); eng.name=side<0?'dieselPort':'dieselStarboard'; engines.add(eng);
-    eng.add(U.box(1.62,0.40,0.63,enginePaint,[x,-0.10,z]));
-    const bedWidth=2*Math.min(.385,inW(x-.90,-.36)-Math.abs(z),inW(x+.90,-.36)-Math.abs(z));
-    eng.add(U.box(1.80,0.075,bedWidth,frameMat,[x,-0.32,z]));
-    for(const bank of [-1,1]) {
-      const rocker=U.box(1.49,0.22,0.25,enginePaint,[x,0.30,z+bank*0.22]); rocker.rotation.x=bank*0.28; eng.add(rocker);
-      eng.add(U.cyl(0.052,0.052,1.68,aluminium,12,[x,0.12,z+bank*0.40],'x'));
-      for(let i=0;i<8;i++) {
-        const xx=x-0.64+i*0.18;
-        eng.add(U.box(0.022,0.24,0.28,frameMat,[xx,0.305,z+bank*0.22]));
-        eng.add(U.cyl(0.014,0.014,0.015,aluminium,8,[xx,0.444,z+bank*0.24]));
+  // Visual DI13 installation. Both instances face aft and retain independent moving parts.
+  const engines = new THREE.Group();
+  engines.name = 'twinDiesels';
+  interior.add(engines);
+  parts.engines = engines;
+  const drives = [];
+  const engineOpenings = ['hatch_engineP', 'hatch_engineS', 'hatch_engineCompanion', 'door_engine'];
+  const engineScale = .145, engineX = 2.33, crankY = -.08;
+  for (const side of [-1, 1]) {
+    const z = side * .91;
+    const engine = CB90.buildDI13(THREE);
+    const mount = new THREE.Group();
+    mount.name = side < 0 ? 'dieselPort' : 'dieselStarboard';
+    engine.group.position.set(engineX, crankY, z);
+    engine.group.rotation.y = Math.PI;
+    engine.group.scale.setScalar(engineScale);
+    mount.add(engine.group);
+    engines.add(mount);
+    drives.push({control: side < 0 ? 'engineP' : 'engineS', angle: 0, setAngle: engine.setAngle});
+
+    // Beds follow the sloping bottom under the outboard feet and the floor under the inboard feet.
+    const footY = crankY + .23 * engineScale, bedTop = footY - .04;
+    for (const railSide of [-1, 1]) {
+      const railZ = z + railSide * 1.65 * engineScale;
+      const sections = [engineX - .73, engineX + .73].map(x => {
+        const st = S(x), z0 = railZ - .05, z1 = railZ + .05;
+        const bottom = zz => Math.max(M.ENGINE_FLOOR_Y, U.lerp(st.keelY, st.chineY, Math.abs(zz) / st.chineZ));
+        return [V(x, bedTop, z1), V(x, bedTop, z0), V(x, bottom(z0), z0), V(x, bottom(z1), z1), V(x, bedTop, z1)];
+      });
+      interior.add(new THREE.Mesh(U.loft(sections, {capStart: true, capEnd: true}), frameMat));
+      for (const dx of [-4, 4]) {
+        interior.add(U.box(.135, .04, .105, beltMat, [engineX + dx * engineScale, footY - .02, railZ]));
       }
     }
-    eng.add(U.box(1.16,0.16,0.14,aluminium,[x,0.46,z]));
-    eng.add(U.cyl(0.135,0.135,0.18,darkMat,16,[x+0.79,0.36,z],'z'));
-    eng.add(U.tube([V(x+0.75,0.40,z),V(x+0.59,0.67,z),V(x+0.20,0.65,z),V(x+0.05,0.49,z)],0.085,aluminium,24));
-    eng.add(U.cyl(0.09,0.09,0.21,U.mat(0xe2ddd0,{metalness:0.2}),14,[x+0.72,0.04,z-side*0.42]));
-    eng.add(U.cyl(0.11,0.11,0.17,enginePaint,16,[x-0.86,0.03,z],'x'));
-    eng.add(U.cyl(0.058,0.058,1.37,aluminium,12,[0.82,-0.23,z],'x'));
-    eng.add(U.tube([V(1.65,0.56,z),V(1.35,0.68,z),V(0.70,0.68,side*1.26),V(0.1,0.30,side*1.2)],0.074,frameMat,28));
-    for(const dx of [-0.67,0.67]) for(const dz of [-0.29,0.29]) {
-      const footZ=Math.sign(z+dz)*Math.min(Math.abs(z+dz),inW(x+dx+.09,-.42)-.065);
-      eng.add(U.box(0.18,0.06,0.12,beltMat,[x+dx,-0.39,footZ]));
-    }
-    for(let i=0;i<5;i++) eng.add(U.tube([V(x-0.50+i*.23,.18,z),V(x-0.5+i*.23,.53,z-.17),V(x-0.41+i*.23,.43,z-.25)],.01,beltMat,10));
+
+    const hubX = engineX - 6.11 * engineScale;
+    const shaftStart = .135;
+    interior.add(U.cyl(.058, .058, hubX - shaftStart, aluminium, 12, [(hubX + shaftStart) / 2, crankY, z], 'x'));
+    const outletX = engineX - 3.98 * engineScale, outletY = crankY + 3.45 * engineScale;
+    const outletZ = z - 2.25 * engineScale;
+    interior.add(U.tube([V(outletX, outletY, outletZ), V(outletX - .15, outletY, outletZ),
+      V(1.26, .64, outletZ), V(.70, .68, side * 1.26), V(.10, .30, side * 1.2)], .052, frameMat, 28));
   }
   // Engine-room sound insulation and accessible switch cabinets.
   for(const side of [-1,1]) {
@@ -858,7 +870,7 @@ CB90.buildHull = function (THREE) {
       const mesh=new THREE.Mesh(geo,b.mat); mesh.receiveShadow=true; target.add(mesh);
     }
   }
-  batchStatic(parts.troopSeats,true); batchStatic(engines,true); batchStatic(interior,false);
+  batchStatic(parts.troopSeats,true); batchStatic(interior,false);
 
   // Low watertight companion door from the troop compartment into the machinery space.
   {
@@ -909,6 +921,18 @@ CB90.buildHull = function (THREE) {
 
   return {
     group: group, parts: parts, articulations: articulations,
-    update: function () { mechanismUpdates.forEach(update=>update()); }, setCutaway: setCutaway,
+    update: function (dt, state) {
+      mechanismUpdates.forEach(update => update());
+      const outside = state?.mode === 'exterior' || state?.mode === 'pilot';
+      engines.visible = !outside || cutaway || state.cutaway ||
+        !engineOpenings.every(id => state.hatches?.[id]?.value === 0);
+      if (!(dt > 0) || !state || !state.enginesOn || state.paused) return;
+      for (const drive of drives) {
+        // Slow display motion makes the individual gear teeth readable in the engine room.
+        drive.angle += dt * (.8 + 2.4 * Math.abs(state[drive.control] || 0));
+        drive.setAngle(drive.angle);
+      }
+    },
+    setCutaway: setCutaway,
   };
 };

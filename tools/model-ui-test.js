@@ -12,7 +12,7 @@ const root=path.resolve(__dirname,'..');
   const markup=fs.readFileSync(path.join(root,'src/page.html'),'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,'');
   await page.setContent(markup);
   await page.locator('#loading').evaluate(e=>e.remove());
-  for(const f of ['vendor/three.min.js','constants.js','util.js','hull.js','superstructure.js','ui.js'])await page.addScriptTag({content:fs.readFileSync(path.join(root,'src',f),'utf8')});
+  for(const f of ['vendor/three.min.js','constants.js','util.js','scania-di13-data.js','scania-di13.js','hull.js','superstructure.js','ui.js'])await page.addScriptTag({content:fs.readFileSync(path.join(root,'src',f),'utf8')});
   await page.evaluate(()=>{
    CB90.WEATHER={clear:{name:'Klart'}};
    const cabin=CB90.buildSuperstructure(THREE),hull=CB90.buildHull(THREE),records=[...cabin.articulations,...hull.articulations];

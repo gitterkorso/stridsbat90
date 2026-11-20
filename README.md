@@ -116,7 +116,7 @@ De två plotterskärmarna i hytten visar ett levande sjökort över samma skärg
 - 20 individuella transportsäten i historiskt 9+9+2-arrangemang utan bälten, samt tre besättningsstolar med höftbälten, ledningar, säkerhetsutrustning, trappor och durkplåt.
 - Upphöjda förarplatser med fjädrade stolar, ratt, två motorreglage och två skophandtag, instrument, VHF, knappar, lampor och öppningsbara elskåp. Skophandtagen följer körmodellens kopplade fram/back-reglage.
 - 14 öppningsbara delar: 13 luckor, dörrar och ramp, samt fällbar signalmast. Roterande ringlavett, höjdriktning och fällbar mittstol ingår som ytterligare tre leder.
-- Två modellerade dieselmotorer, mekaniska vattenjetmunstycken, backskopor och hydraulik.
+- Två Scania DI13 från Motorlabbet visas som en schematisk motorvariant i maskinrummet. Välj **Inspektera → Kameror → Maskinrum** eller öppna maskinluckorna på akterdäck. Varje motors transmissionsdrev följer dess eget reglage i långsam visning. Båten har även modellerade vattenjetmunstycken, backskopor och hydraulik.
 - Procedurellt genererad skärgård (`src/archipelago.js`) med sammanhängande höjdfält: granitöar, holmar, kobbar, undervattensgrund, namngivna öar och fjärdar, sektorfyrar med verkliga fyrkaraktärer och en utprickad farled. Animerat hav, reflektioner och fartberoende kölvatten.
 - Tre modellerade skärmhus med inaktiva glasytor. Separat plottermodul finns kvar för det genererade sjökortet.
 - Båtfärd med acceleration, inbromsning, back, differentialstyrning och grundstötning mot den verkliga bottentopografin; DJUP-mätare under kölen.

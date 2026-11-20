@@ -20,10 +20,10 @@ function canvas() {
   }, { get: (object, key) => key in object ? object[key] : noop });
   return { width: 300, height: 150, getContext: () => context };
 }
-const context = { THREE, console, document: { createElement: canvas }, performance: { now: () => 0 } };
+const context = { THREE, atob, console, document: { createElement: canvas }, performance: { now: () => 0 } };
 context.window = context;
 vm.createContext(context);
-for (const file of ['constants.js', 'util.js', 'hull.js', 'superstructure.js', 'equipment.js', 'navigation.js']) {
+for (const file of ['constants.js', 'util.js', 'scania-di13-data.js', 'scania-di13.js', 'hull.js', 'superstructure.js', 'equipment.js', 'navigation.js']) {
   vm.runInContext(fs.readFileSync(path.join(root, 'src', file), 'utf8'), context, { filename: file });
 }
 const CB90 = context.CB90, M = CB90.M;

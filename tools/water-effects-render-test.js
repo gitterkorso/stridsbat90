@@ -16,7 +16,7 @@ fs.mkdirSync(output, {recursive: true});
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
-    const scripts = ['vendor/three.min', 'constants', 'util', 'hull', 'superstructure',
+    const scripts = ['vendor/three.min', 'constants', 'util', 'scania-di13-data', 'scania-di13', 'hull', 'superstructure',
       'equipment', 'waterjet', 'archipelago', 'sea-state', 'weather', 'wake',
       'water-depth', 'hull-waves', 'hull-wave-surface', 'water', 'environment'];
     await page.setContent('<body style="margin:0">' + scripts.map(file => '<script>' +

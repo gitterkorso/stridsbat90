@@ -7,7 +7,7 @@ const root = path.resolve(__dirname, '..');
 const output = path.resolve(process.argv[2] || path.join(root, 'shots/foredeck-2026-10-20/close'));
 const source = path.resolve(process.argv[3] || path.join(root, 'src'));
 fs.mkdirSync(output, { recursive: true });
-const scripts = ['vendor/three.min.js','constants.js','util.js','hull.js','superstructure.js','equipment.js','waterjet.js'];
+const scripts = ['vendor/three.min.js','constants.js','util.js','scania-di13-data.js','scania-di13.js','hull.js','superstructure.js','equipment.js','waterjet.js'];
 const html = '<html><body style="margin:0">' + scripts.map(file => '<script>' + fs.readFileSync(path.join(source,file),'utf8').replace(/<\/script/gi,'<\\/script') + '</script>').join('') + '</body></html>';
 (async () => {
   const browser = await chromium.launch({ channel:'chrome', headless:true, args:['--use-angle=swiftshader','--enable-unsafe-swiftshader'] });
